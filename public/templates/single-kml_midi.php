@@ -103,11 +103,14 @@ wp_enqueue_script(
   true
 );
 
+$pianoroll_path = KML_PLUGIN_DIR . 'public/assets/kml-pianoroll.js';
+$pianoroll_ver  = file_exists( $pianoroll_path ) ? (string) filemtime( $pianoroll_path ) : KML_VERSION;
+
 wp_enqueue_script(
   'kml-pianoroll',
   plugins_url('public/assets/kml-pianoroll.js', KML_PLUGIN_FILE),
   ['tonejs'],
-  '1.1.1',
+  $pianoroll_ver,
   true
 );
 ?>

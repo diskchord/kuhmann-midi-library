@@ -3,39 +3,168 @@
   'use strict';
 
   // ---- smplr piano (SplendidGrandPiano) ----
-  let audioCtx = null;
-  let piano = null;
-  let pianoLoadPromise = null;
+  const SMPLR_MODULE_URL = 'https://unpkg.com/smplr@0.18.1/dist/index.mjs';
+  const SMPLR_CACHE_NAME = 'kml-splendid-grand-v1';
 
-  async function ensurePiano() {
+  let audioCtx = null;
+  let smplrModulePromise = null;
+  const pianoBySignature = new Map();
+
+  function loadSmplrModule() {
+    if (!smplrModulePromise) {
+      smplrModulePromise = import(SMPLR_MODULE_URL);
+    }
+    return smplrModulePromise;
+  }
+
+  function collectRootSampleNotes(mod) {
+    const layers = Array.isArray(mod && mod.LAYERS) ? mod.LAYERS : [];
+    const noteSet = new Set();
+
+    layers.forEach((layer) => {
+      const samples = Array.isArray(layer && layer.samples) ? layer.samples : [];
+      samples.forEach((sample) => {
+        const midi = Array.isArray(sample) ? sample[0] : null;
+        if (Number.isFinite(midi)) noteSet.add(midi);
+      });
+    });
+
+    return Array.from(noteSet).sort((a, b) => a - b);
+  }
+
+  function analyzeNoteStats(notes) {
+    if (!Array.isArray(notes) || !notes.length) return null;
+
+    let lo = 127;
+    let hi = 0;
+
+    for (const n of notes) {
+      if (!n || !Number.isFinite(n.midi)) continue;
+      lo = Math.min(lo, n.midi);
+      hi = Math.max(hi, n.midi);
+    }
+
+    if (lo > hi) return null;
+    return { lo, hi };
+  }
+
+  function buildPianoProfile(mod, stats) {
+    const rootNotes = collectRootSampleNotes(mod);
+
+    if (!stats || !rootNotes.length) {
+      return {
+        signature: 'full',
+        options: {},
+      };
+    }
+
+    // Add guard rails so edge notes are still covered naturally.
+    const guard = 7;
+    const minWanted = clamp(stats.lo - guard, 0, 127);
+    const maxWanted = clamp(stats.hi + guard, 0, 127);
+    let notes = rootNotes.filter((m) => m >= minWanted && m <= maxWanted);
+
+    if (notes.length < 6) {
+      const minWide = clamp(minWanted - 12, 0, 127);
+      const maxWide = clamp(maxWanted + 12, 0, 127);
+      notes = rootNotes.filter((m) => m >= minWide && m <= maxWide);
+    }
+
+    if (!notes.length || notes.length >= rootNotes.length) {
+      return {
+        signature: 'full',
+        options: {},
+      };
+    }
+
+    return {
+      signature: 'r' + notes[0] + '-' + notes[notes.length - 1] + '-' + notes.length,
+      options: {
+        notesToLoad: {
+          notes: notes,
+          velocityRange: [1, 127],
+        },
+      },
+    };
+  }
+
+  async function ensurePiano(stats, opts) {
+    const options = opts || {};
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
 
-    // Must be resumed after a user gesture (we call this from the Play button handler)
-    if (audioCtx.state !== 'running') {
+    // Resume is required on click-to-play. For warmup we can skip resume.
+    if (options.resumeCtx !== false && audioCtx.state !== 'running') {
       await audioCtx.resume();
     }
 
-    if (piano) return piano;
-    if (pianoLoadPromise) return pianoLoadPromise;
+    const mod = await loadSmplrModule();
+    const SplendidGrandPiano = mod && mod.SplendidGrandPiano;
 
-    pianoLoadPromise = (async () => {
-      // Load smplr as an ESM module (browser-friendly)
-      const mod = await import('https://unpkg.com/smplr@0.18.1/dist/index.mjs');
-      const SplendidGrandPiano = mod && mod.SplendidGrandPiano;
+    if (!SplendidGrandPiano) {
+      throw new Error('smplr loaded, but SplendidGrandPiano export was not found.');
+    }
 
-      if (!SplendidGrandPiano) {
-        throw new Error('smplr loaded, but SplendidGrandPiano export was not found.');
+    const profile = buildPianoProfile(mod, stats);
+    const signature = profile.signature;
+    const existing = pianoBySignature.get(signature);
+    if (existing) return await existing;
+
+    const pianoPromise = (async () => {
+      let storageOption = {};
+      try {
+        if (typeof mod.CacheStorage === 'function') {
+          storageOption = { storage: new mod.CacheStorage(SMPLR_CACHE_NAME) };
+        }
+      } catch (e) {
+        storageOption = {};
       }
 
-      // smplr instruments expose a .load promise (see smplr docs)
-      const inst = await new SplendidGrandPiano(audioCtx).load;
+      // Keep original tone quality, but limit sample-note coverage to the piece.
+      const inst = await new SplendidGrandPiano(
+        audioCtx,
+        Object.assign(
+          {
+            formats: ['m4a', 'ogg'],
+          },
+          storageOption,
+          profile.options
+        )
+      ).load;
       return inst;
     })();
 
-    piano = await pianoLoadPromise;
-    return piano;
+    pianoBySignature.set(signature, pianoPromise);
+
+    try {
+      const inst = await pianoPromise;
+      pianoBySignature.set(signature, inst);
+      return inst;
+    } catch (e) {
+      pianoBySignature.delete(signature);
+      throw e;
+    }
+  }
+
+  function shouldWarmPiano() {
+    const c = navigator.connection;
+    if (!c) return true;
+    if (c.saveData) return false;
+    return c.effectiveType !== 'slow-2g' && c.effectiveType !== '2g';
+  }
+
+  function warmPianoSoon(stats) {
+    if (!shouldWarmPiano()) return;
+    const warm = () => {
+      ensurePiano(stats, { resumeCtx: false }).catch(() => {});
+    };
+
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(warm, { timeout: 1800 });
+    } else {
+      window.setTimeout(warm, 600);
+    }
   }
 
   function clamp(v, a, b) {
@@ -51,7 +180,7 @@
   }
 
   async function loadArrayBuffer(url) {
-    const r = await fetch(url, { cache: 'no-store' });
+    const r = await fetch(url);
     if (!r.ok) throw new Error('Fetch failed: ' + r.status);
     return await r.arrayBuffer();
   }
@@ -125,6 +254,7 @@
     let notes = [];
     let durTotal = 0;
     let range = { lo: 36, hi: 84 };
+    let noteStats = null;
 
     // Visual params
     let pxPerSec = Number(zoom.value || 90);
@@ -135,6 +265,7 @@
     let isPlaying = false;
     let startPerf = 0; // performance.now() when playback started
     let startAt = 0; // song time offset (seconds) when playback started
+    let activePiano = null;
 
     // Track per-note stop functions returned by smplr.start()
     let scheduledStops = [];
@@ -165,7 +296,7 @@
     function cancelScheduled() {
       // Stop everything currently ringing
       try {
-        if (piano) piano.stop();
+        if (activePiano) activePiano.stop();
       } catch (e) {}
 
       // Stop any notes that returned per-note stop fns
@@ -188,7 +319,8 @@
       setTempoScale();
 
       setStatus('Loading piano...');
-      const inst = await ensurePiano();
+      const inst = await ensurePiano(noteStats, { resumeCtx: true });
+      activePiano = inst;
 
       // Cancel anything from a prior run/pause
       cancelScheduled();
@@ -385,6 +517,7 @@
         const buf = await loadArrayBuffer(url);
         midi = new Midi(buf);
         notes = collectNotes(midi);
+        noteStats = analyzeNoteStats(notes);
 
         durTotal =
           midi.duration ||
@@ -398,6 +531,8 @@
 
         playBtn.disabled = false;
         playBtn.textContent = 'Play';
+
+        warmPianoSoon(noteStats);
 
         requestAnimationFrame(draw);
       } catch (e) {
