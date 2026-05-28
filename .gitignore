@@ -1,0 +1,45 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Dependency and build output
+node_modules/
+vendor/
+dist/
+build/
+coverage/
+
+# Logs and caches
+*.log
+.cache/
+.phpunit.result.cache
+
+# WordPress local installs and uploads
+wp-config.php
+wp-content/uploads/
+wp-content/cache/
+wp-content/upgrade/
+
+# Large MIDI payloads should live outside this plugin repository
+*.mid
+*.midi
+
+# Release archives and backups
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.bak
+*.orig
