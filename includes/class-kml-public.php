@@ -59,7 +59,7 @@ final class KML_Public {
 		// Optional browser MIDI player: only on single pages AND only if a public URL is available.
 		if ( is_singular( KML_Post_Types::POST_TYPE ) ) {
 			$post_id = get_the_ID();
-			$file_url = $post_id ? get_post_meta( $post_id, 'kml_file_url', true ) : '';
+			$file_url = $post_id ? self::get_public_file_url( (int) $post_id ) : '';
 			if ( ! empty( $file_url ) ) {
 				wp_enqueue_script(
 					'kml-html-midi-player',
@@ -98,6 +98,15 @@ final class KML_Public {
 		}
 
 		return $template;
+	}
+
+	public static function get_public_file_url( int $post_id ): string {
+		$relpath = (string) get_post_meta( $post_id, 'kml_relpath', true );
+		if ( '' !== $relpath ) {
+			return KML_Indexer::file_url_from_relpath( $relpath );
+		}
+
+		return esc_url_raw( (string) get_post_meta( $post_id, 'kml_file_url', true ) );
 	}
 
 	public static function maybe_serve_download(): void {

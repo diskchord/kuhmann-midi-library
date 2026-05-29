@@ -14,7 +14,7 @@ get_header();
 the_post();
 
 $post_id  = get_the_ID();
-$file_url = (string) get_post_meta( $post_id, 'kml_file_url', true );
+$file_url = KML_Public::get_public_file_url( (int) $post_id );
 $abs_path = (string) get_post_meta( $post_id, 'kml_abspath', true );
 $relpath  = (string) get_post_meta( $post_id, 'kml_relpath', true );
 $filesize = (int) get_post_meta( $post_id, 'kml_filesize', true );

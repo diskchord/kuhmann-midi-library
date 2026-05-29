@@ -370,7 +370,7 @@ if ( $post_id ) {
 		return $base . '-' . $hash;
 	}
 
-	private static function file_url_from_relpath( string $rel_file ): string {
+	public static function file_url_from_relpath( string $rel_file ): string {
 		$base = self::get_url_base();
 		if ( empty( $base ) ) {
 			return '';
@@ -378,6 +378,7 @@ if ( $post_id ) {
 
 		$rel_file = str_replace( '\\', '/', $rel_file );
 		$rel_file = ltrim( $rel_file, '/' );
+		$rel_file = implode( '/', array_map( 'rawurlencode', explode( '/', $rel_file ) ) );
 
 		// Note: if files are not directly web-accessible, leave URL base empty and use the download endpoint.
 		return esc_url_raw( trailingslashit( $base ) . $rel_file );
