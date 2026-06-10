@@ -115,13 +115,14 @@ if ( ! ( $term instanceof WP_Term ) ) {
 			$args['s'] = $search;
 		}
 
+		$show_details = '' !== $search;
 		$q = new WP_Query( $args );
 
 		if ( $q->have_posts() ) :
 		?>
-			<ul class="kml-files">
+			<ul class="kml-files<?php echo $show_details ? ' kml-files-detailed' : ''; ?>">
 				<?php while ( $q->have_posts() ) : $q->the_post(); ?>
-					<li><a href="<?php the_permalink(); ?>"><?php the_title(); ?></a></li>
+					<?php KML_Public::render_file_list_item( (int) get_the_ID(), $show_details ); ?>
 				<?php endwhile; ?>
 			</ul>
 

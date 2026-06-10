@@ -27,10 +27,6 @@ function kml_term_count_including_children( WP_Term $term, string $taxonomy ): i
 	return $total;
 }
 
-add_action( 'wp_head', function() {
-	echo '<meta name="description" content="Curated Yamaha Disklavier-ready MIDI files and downloads, a mirror of the classic Kuhmann / Disklavier World library organized for easy browsing and playback.">' . "\n";
-}, 1 );
-
 get_header();
 
 $search = isset( $_GET['kml_q'] ) ? sanitize_text_field( wp_unslash( $_GET['kml_q'] ) ) : '';
@@ -100,9 +96,9 @@ $search = isset( $_GET['kml_q'] ) ? sanitize_text_field( wp_unslash( $_GET['kml_
 		$q = new WP_Query( $args );
 		if ( $q->have_posts() ) :
 		?>
-			<ul class="kml-files">
+			<ul class="kml-files kml-files-detailed">
 				<?php while ( $q->have_posts() ) : $q->the_post(); ?>
-					<li><a href="<?php the_permalink(); ?>"><?php the_title(); ?></a></li>
+					<?php KML_Public::render_file_list_item( (int) get_the_ID(), true ); ?>
 				<?php endwhile; ?>
 			</ul>
 			<?php wp_reset_postdata(); ?>

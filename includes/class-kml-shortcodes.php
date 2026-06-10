@@ -88,7 +88,7 @@ final class KML_Shortcodes {
 			echo '<ul class="kml-files">';
 			while ( $q->have_posts() ) {
 				$q->the_post();
-				echo '<li><a href="' . esc_url( get_permalink() ) . '">' . esc_html( get_the_title() ) . '</a></li>';
+				KML_Public::render_file_list_item( (int) get_the_ID() );
 			}
 			echo '</ul>';
 			wp_reset_postdata();
@@ -153,14 +153,15 @@ final class KML_Shortcodes {
 			$args['s'] = $search;
 		}
 
+		$show_details = '' !== $search;
 		$q = new WP_Query( $args );
 
 		echo '<h3>' . esc_html__( 'MIDI Files', 'kuhmann-midi-library' ) . '</h3>';
 		if ( $q->have_posts() ) {
-			echo '<ul class="kml-files">';
+			echo '<ul class="kml-files' . ( $show_details ? ' kml-files-detailed' : '' ) . '">';
 			while ( $q->have_posts() ) {
 				$q->the_post();
-				echo '<li><a href="' . esc_url( get_permalink() ) . '">' . esc_html( get_the_title() ) . '</a></li>';
+				KML_Public::render_file_list_item( (int) get_the_ID(), $show_details );
 			}
 			echo '</ul>';
 

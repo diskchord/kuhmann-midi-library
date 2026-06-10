@@ -7,6 +7,8 @@ final class KML_Post_Types {
 
 	public const POST_TYPE = 'kml_midi';
 	public const TAX_FOLDER = 'kml_folder';
+	public const META_VIEW_COUNT = 'kml_view_count';
+	public const META_DOWNLOAD_COUNT = 'kml_download_count';
 
 	public static function register(): void {
 		self::register_post_type();
@@ -40,7 +42,7 @@ final class KML_Post_Types {
 				'has_archive'        => 'midi',
 				'menu_icon'          => 'dashicons-format-audio',
 				'show_in_rest'       => true,
-				'supports'           => array( 'title', 'editor', 'excerpt' ),
+				'supports'           => array( 'title', 'editor', 'excerpt', 'author' ),
 				'rewrite'            => array(
 					'slug'       => 'midi',
 					'with_front' => false,
@@ -88,6 +90,8 @@ final class KML_Post_Types {
 		$columns['kml_folder']  = __( 'Folder', 'kuhmann-midi-library' );
 		$columns['kml_relpath'] = __( 'Relative Path', 'kuhmann-midi-library' );
 		$columns['kml_size']    = __( 'Size', 'kuhmann-midi-library' );
+		$columns['kml_views']     = __( 'Views', 'kuhmann-midi-library' );
+		$columns['kml_downloads'] = __( 'Downloads', 'kuhmann-midi-library' );
 		return $columns;
 	}
 
@@ -111,6 +115,18 @@ final class KML_Post_Types {
 		if ( 'kml_size' === $column ) {
 			$size = (int) get_post_meta( $post_id, 'kml_filesize', true );
 			echo esc_html( self::human_filesize( $size ) );
+			return;
+		}
+
+		if ( 'kml_views' === $column ) {
+			$views = (int) get_post_meta( $post_id, self::META_VIEW_COUNT, true );
+			echo esc_html( number_format_i18n( $views ) );
+			return;
+		}
+
+		if ( 'kml_downloads' === $column ) {
+			$downloads = (int) get_post_meta( $post_id, self::META_DOWNLOAD_COUNT, true );
+			echo esc_html( number_format_i18n( $downloads ) );
 			return;
 		}
 	}

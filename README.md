@@ -12,7 +12,9 @@ The plugin was built for publishing a navigable Kuhmann / Disklavier World MIDI 
 - Adds public archive, folder, and single MIDI templates.
 - Supports search across the archive and within folders.
 - Stores relative path, absolute path, filename, file size, modified time, and optional public URL metadata.
-- Provides a protected download endpoint when files are not directly public.
+- Provides a protected download endpoint for MIDI downloads.
+- Tracks internal per-file view and download counts in the WordPress admin.
+- Adds meaningful meta descriptions and generated page summaries for archive, folder, and single MIDI download pages.
 - Adds a beta browser playback / piano-roll view when a public file URL is configured.
 - Includes a `[kml_library]` shortcode for embedding a browsable library.
 - Supports WP-Cron indexing and WP-CLI indexing/status commands.
@@ -57,7 +59,7 @@ If MIDI files are publicly accessible, set the matching URL base:
 https://example.com/wp-content/uploads/kuhmann-midi
 ```
 
-When this is configured, single MIDI pages can link directly to the source file and load the beta browser player. If it is empty, indexed files can still be downloaded through the plugin's `/midi-download/{post_id}/` endpoint as long as the underlying file remains readable by PHP.
+When this is configured, single MIDI pages can load the beta browser player from the public file URL. Downloads still go through the plugin's `/midi-download/{post_id}/` endpoint so download counts can be tracked, as long as the underlying file remains readable by PHP.
 
 ### Batch Size
 

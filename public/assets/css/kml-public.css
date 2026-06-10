@@ -79,6 +79,35 @@
 	margin: 0.25rem 0;
 }
 
+.kml-files-detailed {
+	display: block;
+}
+
+.kml-files-detailed .kml-file-result {
+	padding: 0.75rem 0;
+	border-bottom: 1px solid rgba(0,0,0,0.10);
+}
+
+.kml-files-detailed .kml-file-result:last-child {
+	border-bottom: 0;
+}
+
+.kml-file-title {
+	font-weight: 600;
+}
+
+.kml-file-author {
+	margin-top: 0.2rem;
+	font-size: 0.9em;
+	opacity: 0.75;
+}
+
+.kml-file-summary {
+	max-width: 760px;
+	margin-top: 0.35rem;
+	line-height: 1.45;
+}
+
 .kml-player midi-visualizer {
 	display: block;
 	height: 220px;

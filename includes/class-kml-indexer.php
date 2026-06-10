@@ -240,8 +240,9 @@ private static function force_valid_utf8( string $s ): string {
 
 		$post_id = ( is_array( $existing ) && ! empty( $existing ) ) ? (int) $existing[0] : 0;
 
-		$title = self::force_valid_utf8(self::nice_title_from_filename( basename( $rel_file ) ));
-		$slug  = self::unique_slug_for_relpath( $title, $rel_file );
+		$title   = self::force_valid_utf8( self::nice_title_from_filename( basename( $rel_file ) ) );
+		$slug    = self::unique_slug_for_relpath( $title, $rel_file );
+		$summary = self::summary_from_file( $title, $rel_file, $folder_rel, $filesize, $mtime );
 
 		$post_data = array(
 			'post_type'   => KML_Post_Types::POST_TYPE,
@@ -250,35 +251,45 @@ private static function force_valid_utf8( string $s ): string {
 			'post_status' => 'publish',
 		);
 
-if ( $post_id ) {
-	$post_data['ID'] = $post_id;
-
-	$updated = wp_update_post( wp_slash( $post_data ), true );
-	if ( is_wp_error( $updated ) ) {
-		// Optional: log for debugging.
-		if ( defined( 'WP_CLI' ) && WP_CLI ) {
-			WP_CLI::warning( sprintf( 'Update failed for %s: %s', $rel_file, $updated->get_error_message() ) );
-		} else {
-			error_log( sprintf( '[KML] Update failed for %s: %s', $rel_file, $updated->get_error_message() ) );
+		$author_id = self::default_author_id();
+		if ( $author_id > 0 ) {
+			$post_data['post_author'] = $author_id;
 		}
-		return;
-	}
 
-	$post_id = (int) $updated;
-} else {
-	$inserted = wp_insert_post( wp_slash( $post_data ), true );
-	if ( is_wp_error( $inserted ) ) {
-		// Optional: log for debugging.
-		if ( defined( 'WP_CLI' ) && WP_CLI ) {
-			WP_CLI::warning( sprintf( 'Insert failed for %s: %s', $rel_file, $inserted->get_error_message() ) );
-		} else {
-			error_log( sprintf( '[KML] Insert failed for %s: %s', $rel_file, $inserted->get_error_message() ) );
+		$current_excerpt = $post_id ? trim( (string) get_post_field( 'post_excerpt', $post_id ) ) : '';
+		if ( ! $post_id || '' === $current_excerpt || self::is_legacy_summary( $current_excerpt ) ) {
+			$post_data['post_excerpt'] = $summary;
 		}
-		return;
-	}
 
-	$post_id = (int) $inserted;
-}
+		if ( $post_id ) {
+			$post_data['ID'] = $post_id;
+
+			$updated = wp_update_post( wp_slash( $post_data ), true );
+			if ( is_wp_error( $updated ) ) {
+				// Optional: log for debugging.
+				if ( defined( 'WP_CLI' ) && WP_CLI ) {
+					WP_CLI::warning( sprintf( 'Update failed for %s: %s', $rel_file, $updated->get_error_message() ) );
+				} else {
+					error_log( sprintf( '[KML] Update failed for %s: %s', $rel_file, $updated->get_error_message() ) );
+				}
+				return;
+			}
+
+			$post_id = (int) $updated;
+		} else {
+			$inserted = wp_insert_post( wp_slash( $post_data ), true );
+			if ( is_wp_error( $inserted ) ) {
+				// Optional: log for debugging.
+				if ( defined( 'WP_CLI' ) && WP_CLI ) {
+					WP_CLI::warning( sprintf( 'Insert failed for %s: %s', $rel_file, $inserted->get_error_message() ) );
+				} else {
+					error_log( sprintf( '[KML] Insert failed for %s: %s', $rel_file, $inserted->get_error_message() ) );
+				}
+				return;
+			}
+
+			$post_id = (int) $inserted;
+		}
 		if ( ! $post_id || is_wp_error( $post_id ) ) {
 			return;
 		}
@@ -289,6 +300,8 @@ if ( $post_id ) {
 		update_post_meta( $post_id, 'kml_mtime', $mtime );
 		update_post_meta( $post_id, 'kml_filename', basename( $rel_file ) );
 		update_post_meta( $post_id, 'kml_folder_rel', $folder_rel );
+		add_post_meta( $post_id, KML_Post_Types::META_VIEW_COUNT, 0, true );
+		add_post_meta( $post_id, KML_Post_Types::META_DOWNLOAD_COUNT, 0, true );
 
 		$url = self::file_url_from_relpath( $rel_file );
 		if ( $url ) {
@@ -356,6 +369,91 @@ if ( $post_id ) {
 			$name = $filename;
 		}
 		return $name;
+	}
+
+	private static function summary_from_file( string $title, string $rel_file, string $folder_rel, int $filesize, int $mtime ): string {
+		$summary = sprintf(
+			/* translators: %s: MIDI file title. */
+			__( 'Download the %s MIDI file from the Kuhmann / Disklavier World mirror.', 'kuhmann-midi-library' ),
+			$title
+		);
+
+		$folder_label = trim( str_replace( '/', ' / ', str_replace( '\\', '/', $folder_rel ) ) );
+		if ( '' !== $folder_label ) {
+			$summary .= ' ' . sprintf(
+				/* translators: %s: folder path. */
+				__( 'This Yamaha Disklavier-ready MIDI download is filed under %s.', 'kuhmann-midi-library' ),
+				$folder_label
+			);
+		}
+
+		$filename = basename( $rel_file );
+		if ( '' !== $filename ) {
+			$summary .= ' ' . sprintf(
+				/* translators: %s: filename. */
+				__( 'Filename: %s.', 'kuhmann-midi-library' ),
+				$filename
+			);
+		}
+
+		if ( $filesize > 0 ) {
+			$summary .= ' ' . sprintf(
+				/* translators: %s: formatted file size. */
+				__( 'File size: %s.', 'kuhmann-midi-library' ),
+				size_format( $filesize )
+			);
+		}
+
+		if ( $mtime > 0 ) {
+			$summary .= ' ' . sprintf(
+				/* translators: %s: localized modified date. */
+				__( 'Last updated: %s.', 'kuhmann-midi-library' ),
+				date_i18n( get_option( 'date_format' ), $mtime )
+			);
+		}
+
+		return self::force_valid_utf8( $summary );
+	}
+
+	private static function default_author_id(): int {
+		$author_id = (int) apply_filters( 'kml_default_author_user_id', 0 );
+		if ( $author_id > 0 && get_userdata( $author_id ) ) {
+			return $author_id;
+		}
+
+		foreach ( array( 'peppe', 'alexanderpeppe', 'alexander-peppe', 'alexander_peppe' ) as $login ) {
+			$user = get_user_by( 'login', $login );
+			if ( $user ) {
+				return (int) $user->ID;
+			}
+		}
+
+		$user = get_user_by( 'slug', 'peppe' );
+		if ( $user ) {
+			return (int) $user->ID;
+		}
+
+		$users = get_users(
+			array(
+				'search'         => 'Alexander Peppe',
+				'search_columns' => array( 'display_name', 'user_login', 'user_nicename' ),
+				'number'         => 5,
+			)
+		);
+
+		foreach ( $users as $user ) {
+			if ( isset( $user->display_name ) && 0 === strcasecmp( 'Alexander Peppe', (string) $user->display_name ) ) {
+				return (int) $user->ID;
+			}
+		}
+
+		return 0;
+	}
+
+	private static function is_legacy_summary( string $summary ): bool {
+		$summary = strtolower( wp_strip_all_tags( $summary ) );
+		return false !== strpos( $summary, 'is a downloadable file resource' )
+			&& false !== strpos( $summary, 'related instructions or context available on the site' );
 	}
 
 	/**

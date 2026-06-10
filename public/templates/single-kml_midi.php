@@ -21,7 +21,7 @@ $filesize = (int) get_post_meta( $post_id, 'kml_filesize', true );
 $mtime    = (int) get_post_meta( $post_id, 'kml_mtime', true );
 
 $has_readable_file = ( '' !== $abs_path ) && file_exists( $abs_path ) && is_readable( $abs_path );
-$download_url      = ( '' !== $file_url && $has_readable_file ) ? $file_url : '';
+$download_url      = $has_readable_file ? KML_Public::get_download_url( (int) $post_id ) : '';
 
 $terms = get_the_terms( $post_id, KML_Post_Types::TAX_FOLDER );
 $folder_term = ( is_array( $terms ) && ! empty( $terms ) ) ? $terms[0] : null;
