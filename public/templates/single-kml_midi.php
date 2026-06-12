@@ -76,14 +76,14 @@ $folder_term = ( is_array( $terms ) && ! empty( $terms ) ) ? $terms[0] : null;
 .kml-canvas{
   display:block;
   width:100%;
-  height: 320px;        /* visual height */
+  height: 560px;
   border-radius: 12px;
   border: 1px solid rgba(0,0,0,.10);
   background: rgba(0,0,0,.02);
 }
 @media (max-width: 600px){
   .kml-label input[type="range"]{ width: 120px; }
-  .kml-canvas{ height: 260px; }
+  .kml-canvas{ height: 440px; }
 }
 </style>
 <?php
@@ -109,7 +109,7 @@ $pianoroll_ver  = file_exists( $pianoroll_path ) ? (string) filemtime( $pianorol
 wp_enqueue_script(
   'kml-pianoroll',
   plugins_url('public/assets/kml-pianoroll.js', KML_PLUGIN_FILE),
-  ['tonejs'],
+  ['tonejs', 'tonejs-midi'],
   $pianoroll_ver,
   true
 );
@@ -190,7 +190,7 @@ if (function_exists('do_shortcode')) {
         <span class="kml-time">0:00 / --:--</span>
       </div>
 
-      <canvas class="kml-canvas" height="320"></canvas>
+      <canvas class="kml-canvas" height="560"></canvas>
     </div>
 <p><i>Please note that this player is in Beta, and that it often does not play Yamaha XG format files correctly.</i></p>
   </section>

@@ -1,150 +1,109 @@
-/* global Midi */
+/* global Midi, Tone */
 (function () {
   'use strict';
 
-  // ---- smplr piano (SplendidGrandPiano) ----
-  const SMPLR_MODULE_URL = 'https://unpkg.com/smplr@0.18.1/dist/index.mjs';
-  const SMPLR_CACHE_NAME = 'kml-splendid-grand-v1';
+  // ---- Tone.js piano sampler ----
+  const PIANO_LOW_MIDI = 21; // A0
+  const PIANO_HIGH_MIDI = 108; // C8
+  const PIANO_KEY_COUNT = PIANO_HIGH_MIDI - PIANO_LOW_MIDI + 1;
+  const PEDAL_ROW_WEIGHT = 3;
+  const SUSTAIN_CC = 64;
+  const PEDAL_ON_THRESHOLD = 0.5;
+  const PIANO_VELOCITY_SCALE = 0.6;
+  const PIANO_MAX_VELOCITY = 0.62;
+  const PIANO_NOTE_ATTACK = 0.012;
+  const PIANO_NOTE_RELEASE = 0.45;
+  const PIANO_OUTPUT_VOLUME_DB = -14;
+  const PIANO_MASTER_GAIN = 0.38;
+  const PIANO_LOWPASS_CUTOFF_HZ = 12000;
+  const PIANO_SAMPLE_BASE_URL = 'https://tambien.github.io/Piano/audio/';
+  const PIANO_SAMPLE_VELOCITY = 8;
+  const NOTE_SCHEDULE_LOOKAHEAD = 0.1;
+  const NOTE_SCHEDULE_INTERVAL_MS = 25;
+  const PIANO_SAMPLE_ROOTS = [
+    21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 72, 75, 78, 81, 84,
+    87, 90, 93, 96, 99, 102, 105, 108,
+  ];
+  const PEDAL_LANES = [
+    { cc: 67, label: 'Soft' },
+    { cc: 66, label: 'Sostenuto' },
+    { cc: SUSTAIN_CC, label: 'Sustain' },
+  ];
 
-  let audioCtx = null;
-  let smplrModulePromise = null;
-  const pianoBySignature = new Map();
+  let tonePiano = null;
+  let tonePianoPromise = null;
 
-  function loadSmplrModule() {
-    if (!smplrModulePromise) {
-      smplrModulePromise = import(SMPLR_MODULE_URL);
-    }
-    return smplrModulePromise;
+  function midiToSampleNote(midi) {
+    const names = ['C', 'Cs', 'D', 'Ds', 'E', 'F', 'Fs', 'G', 'Gs', 'A', 'As', 'B'];
+    return names[midi % 12] + String(Math.floor(midi / 12) - 1);
   }
 
-  function collectRootSampleNotes(mod) {
-    const layers = Array.isArray(mod && mod.LAYERS) ? mod.LAYERS : [];
-    const noteSet = new Set();
+  function midiToToneNote(midi) {
+    const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    return names[midi % 12] + String(Math.floor(midi / 12) - 1);
+  }
 
-    layers.forEach((layer) => {
-      const samples = Array.isArray(layer && layer.samples) ? layer.samples : [];
-      samples.forEach((sample) => {
-        const midi = Array.isArray(sample) ? sample[0] : null;
-        if (Number.isFinite(midi)) noteSet.add(midi);
-      });
+  function buildToneSamplerUrls() {
+    const urls = {};
+
+    PIANO_SAMPLE_ROOTS.forEach((midi) => {
+      urls[midi] = midiToSampleNote(midi) + 'v' + PIANO_SAMPLE_VELOCITY + '.[mp3|ogg]';
     });
 
-    return Array.from(noteSet).sort((a, b) => a - b);
+    return urls;
   }
 
-  function analyzeNoteStats(notes) {
-    if (!Array.isArray(notes) || !notes.length) return null;
-
-    let lo = 127;
-    let hi = 0;
-
-    for (const n of notes) {
-      if (!n || !Number.isFinite(n.midi)) continue;
-      lo = Math.min(lo, n.midi);
-      hi = Math.max(hi, n.midi);
-    }
-
-    if (lo > hi) return null;
-    return { lo, hi };
-  }
-
-  function buildPianoProfile(mod, stats) {
-    const rootNotes = collectRootSampleNotes(mod);
-
-    if (!stats || !rootNotes.length) {
-      return {
-        signature: 'full',
-        options: {},
-      };
-    }
-
-    // Add guard rails so edge notes are still covered naturally.
-    const guard = 7;
-    const minWanted = clamp(stats.lo - guard, 0, 127);
-    const maxWanted = clamp(stats.hi + guard, 0, 127);
-    let notes = rootNotes.filter((m) => m >= minWanted && m <= maxWanted);
-
-    if (notes.length < 6) {
-      const minWide = clamp(minWanted - 12, 0, 127);
-      const maxWide = clamp(maxWanted + 12, 0, 127);
-      notes = rootNotes.filter((m) => m >= minWide && m <= maxWide);
-    }
-
-    if (!notes.length || notes.length >= rootNotes.length) {
-      return {
-        signature: 'full',
-        options: {},
-      };
-    }
-
-    return {
-      signature: 'r' + notes[0] + '-' + notes[notes.length - 1] + '-' + notes.length,
-      options: {
-        notesToLoad: {
-          notes: notes,
-          velocityRange: [1, 127],
-        },
-      },
-    };
-  }
-
-  async function ensurePiano(stats, opts) {
+  async function ensureTonePiano(opts) {
     const options = opts || {};
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    if (!window.Tone || typeof Tone.Sampler !== 'function') {
+      throw new Error('Tone.js was not loaded.');
     }
 
-    // Resume is required on click-to-play. For warmup we can skip resume.
-    if (options.resumeCtx !== false && audioCtx.state !== 'running') {
-      await audioCtx.resume();
+    if (options.resumeCtx !== false && typeof Tone.start === 'function') {
+      await Tone.start();
     }
 
-    const mod = await loadSmplrModule();
-    const SplendidGrandPiano = mod && mod.SplendidGrandPiano;
+    if (tonePiano) return tonePiano;
+    if (tonePianoPromise) return await tonePianoPromise;
 
-    if (!SplendidGrandPiano) {
-      throw new Error('smplr loaded, but SplendidGrandPiano export was not found.');
-    }
+    tonePianoPromise = new Promise((resolve, reject) => {
+      let piano = null;
+      const sampler = new Tone.Sampler({
+        attack: PIANO_NOTE_ATTACK,
+        baseUrl: PIANO_SAMPLE_BASE_URL,
+        curve: 'exponential',
+        onerror: reject,
+        onload: () => {
+          tonePiano = piano;
+          resolve(piano);
+        },
+        release: PIANO_NOTE_RELEASE,
+        urls: buildToneSamplerUrls(),
+        volume: PIANO_OUTPUT_VOLUME_DB,
+      });
+      const filter = new Tone.Filter({
+        frequency: PIANO_LOWPASS_CUTOFF_HZ,
+        rolloff: -12,
+        type: 'lowpass',
+      });
+      const compressor = new Tone.Compressor({
+        attack: 0.03,
+        knee: 18,
+        ratio: 3,
+        release: 0.25,
+        threshold: -10,
+      });
+      const masterGain = new Tone.Gain(PIANO_MASTER_GAIN);
 
-    const profile = buildPianoProfile(mod, stats);
-    const signature = profile.signature;
-    const existing = pianoBySignature.get(signature);
-    if (existing) return await existing;
-
-    const pianoPromise = (async () => {
-      let storageOption = {};
-      try {
-        if (typeof mod.CacheStorage === 'function') {
-          storageOption = { storage: new mod.CacheStorage(SMPLR_CACHE_NAME) };
-        }
-      } catch (e) {
-        storageOption = {};
-      }
-
-      // Keep original tone quality, but limit sample-note coverage to the piece.
-      const inst = await new SplendidGrandPiano(
-        audioCtx,
-        Object.assign(
-          {
-            formats: ['m4a', 'ogg'],
-          },
-          storageOption,
-          profile.options
-        )
-      ).load;
-      return inst;
-    })();
-
-    pianoBySignature.set(signature, pianoPromise);
-
-    try {
-      const inst = await pianoPromise;
-      pianoBySignature.set(signature, inst);
-      return inst;
-    } catch (e) {
-      pianoBySignature.delete(signature);
+      piano = { sampler, filter, compressor, masterGain };
+      sampler.chain(filter, compressor, masterGain, Tone.Destination);
+    }).catch((e) => {
+      tonePianoPromise = null;
       throw e;
-    }
+    });
+
+    return await tonePianoPromise;
   }
 
   function shouldWarmPiano() {
@@ -154,10 +113,10 @@
     return c.effectiveType !== 'slow-2g' && c.effectiveType !== '2g';
   }
 
-  function warmPianoSoon(stats) {
+  function warmPianoSoon() {
     if (!shouldWarmPiano()) return;
     const warm = () => {
-      ensurePiano(stats, { resumeCtx: false }).catch(() => {});
+      ensureTonePiano({ resumeCtx: false }).catch(() => {});
     };
 
     if (typeof window.requestIdleCallback === 'function') {
@@ -216,21 +175,184 @@
     return notes;
   }
 
-  function noteRange(notes) {
-    let lo = 127,
-      hi = 0;
+  function noteEndTime(notes, durationKey) {
+    const key = durationKey || 'duration';
+    let end = 0;
     for (const n of notes) {
-      lo = Math.min(lo, n.midi);
-      hi = Math.max(hi, n.midi);
+      end = Math.max(end, n.time + (n[key] || n.duration || 0));
     }
-    if (lo > hi) {
-      lo = 36;
-      hi = 84;
+    return end;
+  }
+
+  function collectPedalEvents(midi) {
+    return PEDAL_LANES.map((lane) => {
+      const tracks = [];
+
+      midi.tracks.forEach((t) => {
+        const changes = t.controlChanges && t.controlChanges[lane.cc];
+        if (!Array.isArray(changes) || !changes.length) return;
+
+        const events = changes
+          .filter((cc) => cc && Number.isFinite(cc.time) && Number.isFinite(cc.value))
+          .map((cc) => ({
+            time: cc.time,
+            value: cc.value,
+          }))
+          .sort((a, b) => a.time - b.time);
+
+        if (events.length) tracks.push(events);
+      });
+
+      return Object.assign({}, lane, { tracks });
+    });
+  }
+
+  function lastPedalEventTime(pedalEvents) {
+    let end = 0;
+
+    pedalEvents.forEach((lane) => {
+      lane.tracks.forEach((events) => {
+        events.forEach((event) => {
+          end = Math.max(end, event.time);
+        });
+      });
+    });
+
+    return end;
+  }
+
+  function mergeSegments(segments) {
+    const merged = [];
+    const sorted = segments
+      .filter((segment) => segment.duration > 0)
+      .sort((a, b) => a.time - b.time);
+
+    sorted.forEach((segment) => {
+      const last = merged[merged.length - 1];
+      const end = segment.time + segment.duration;
+
+      if (last && segment.time <= last.time + last.duration + 0.001) {
+        last.duration = Math.max(last.time + last.duration, end) - last.time;
+      } else {
+        merged.push({
+          time: segment.time,
+          duration: segment.duration,
+        });
+      }
+    });
+
+    return merged;
+  }
+
+  function buildPedalSegments(pedalEvents, duration) {
+    return pedalEvents.map((lane) => {
+      const segments = [];
+
+      lane.tracks.forEach((events) => {
+        let activeStart = null;
+
+        events.forEach((event) => {
+          const time = clamp(event.time, 0, duration);
+          const isPressed = event.value >= PEDAL_ON_THRESHOLD;
+
+          if (isPressed && activeStart === null) {
+            activeStart = time;
+          } else if (!isPressed && activeStart !== null) {
+            if (time > activeStart) {
+              segments.push({
+                time: activeStart,
+                duration: time - activeStart,
+              });
+            }
+            activeStart = null;
+          }
+        });
+
+        if (activeStart !== null && duration > activeStart) {
+          segments.push({
+            time: activeStart,
+            duration: duration - activeStart,
+          });
+        }
+      });
+
+      return Object.assign({}, lane, {
+        segments: mergeSegments(segments),
+      });
+    });
+  }
+
+  function isBlackKey(midi) {
+    const pitchClass = midi % 12;
+    return (
+      pitchClass === 1 ||
+      pitchClass === 3 ||
+      pitchClass === 6 ||
+      pitchClass === 8 ||
+      pitchClass === 10
+    );
+  }
+
+  function getPedalSegments(pedalLanes, cc) {
+    const lane = pedalLanes.find((item) => item.cc === cc);
+    return lane ? lane.segments : [];
+  }
+
+  function segmentEnd(segment) {
+    return segment.time + segment.duration;
+  }
+
+  function sustainedEndForNote(noteEnd, sustainSegments) {
+    for (const segment of sustainSegments) {
+      if (noteEnd < segment.time) break;
+      if (noteEnd >= segment.time && noteEnd < segmentEnd(segment)) {
+        return segmentEnd(segment);
+      }
     }
-    // add a little padding
-    lo = clamp(lo - 2, 0, 127);
-    hi = clamp(hi + 2, 0, 127);
-    return { lo, hi };
+    return noteEnd;
+  }
+
+  function buildPlaybackNotes(notes, sustainSegments) {
+    const nextStartByPitch = new Map();
+    const playbackNotes = new Array(notes.length);
+
+    for (let i = notes.length - 1; i >= 0; i--) {
+      const n = notes[i];
+      const noteEnd = n.time + n.duration;
+      const sustainedEnd = sustainedEndForNote(noteEnd, sustainSegments);
+      const nextStart = nextStartByPitch.get(n.midi);
+      let playbackEnd = sustainedEnd;
+
+      if (Number.isFinite(nextStart) && nextStart > n.time) {
+        playbackEnd = Math.min(playbackEnd, Math.max(n.time + 0.03, nextStart));
+      }
+
+      playbackNotes[i] = Object.assign({}, n, {
+        playbackDuration: Math.max(0.02, playbackEnd - n.time),
+      });
+
+      nextStartByPitch.set(n.midi, n.time);
+    }
+
+    return playbackNotes;
+  }
+
+  function toneVelocity(note) {
+    const vel01 = typeof note.velocity === 'number' ? note.velocity : 0.8;
+    const scaled = clamp(vel01, 0, 1) * PIANO_VELOCITY_SCALE;
+    return Math.max(0.01, Math.min(PIANO_MAX_VELOCITY, scaled));
+  }
+
+  function drawTimedRect(ctx, start, end, viewLeftTime, viewRightTime, pxPerSec, y, height, fillStyle) {
+    if (end < viewLeftTime || start > viewRightTime) return;
+
+    const clippedStart = Math.max(start, viewLeftTime);
+    const clippedEnd = Math.min(end, viewRightTime);
+    const x = (clippedStart - viewLeftTime) * pxPerSec;
+    const width = Math.max(1, (clippedEnd - clippedStart) * pxPerSec);
+
+    ctx.fillStyle = fillStyle;
+    ctx.fillRect(x, y, width, height);
   }
 
   function initRoll(el) {
@@ -252,13 +374,13 @@
 
     let midi = null;
     let notes = [];
+    let playbackNotes = [];
+    let pedalLanes = PEDAL_LANES.map((lane) => Object.assign({}, lane, { segments: [] }));
     let durTotal = 0;
-    let range = { lo: 36, hi: 84 };
-    let noteStats = null;
+    const range = { lo: PIANO_LOW_MIDI, hi: PIANO_HIGH_MIDI };
 
     // Visual params
     let pxPerSec = Number(zoom.value || 90);
-    let pitchPadding = 2;
 
     // Playback state
     let tempoScale = 1.0; // 1.0 = normal
@@ -266,9 +388,8 @@
     let startPerf = 0; // performance.now() when playback started
     let startAt = 0; // song time offset (seconds) when playback started
     let activePiano = null;
-
-    // Track per-note stop functions returned by smplr.start()
-    let scheduledStops = [];
+    let scheduleTimer = null;
+    let nextNoteIndex = 0;
 
     function setStatus(msg) {
       // Keep this subtle; time text will overwrite during draw
@@ -294,23 +415,65 @@
     }
 
     function cancelScheduled() {
-      // Stop everything currently ringing
-      try {
-        if (activePiano) activePiano.stop();
-      } catch (e) {}
-
-      // Stop any notes that returned per-note stop fns
-      for (const stopFn of scheduledStops) {
-        try {
-          // Some versions accept options; some accept nothing. Try both safely.
-          stopFn({ time: audioCtx ? audioCtx.currentTime : undefined });
-        } catch (e1) {
-          try {
-            stopFn();
-          } catch (e2) {}
-        }
+      if (scheduleTimer) {
+        window.clearInterval(scheduleTimer);
+        scheduleTimer = null;
       }
-      scheduledStops = [];
+
+      nextNoteIndex = 0;
+
+      try {
+        if (
+          activePiano &&
+          activePiano.sampler &&
+          typeof activePiano.sampler.releaseAll === 'function'
+        ) {
+          activePiano.sampler.releaseAll(Tone.now());
+        }
+      } catch (e) {}
+    }
+
+    function resetScheduleIndex() {
+      nextNoteIndex = 0;
+
+      while (nextNoteIndex < playbackNotes.length) {
+        const n = playbackNotes[nextNoteIndex];
+        if (n.time + n.duration > startAt) break;
+        nextNoteIndex++;
+      }
+    }
+
+    function scheduleToneNote(n, tNow, toneNow) {
+      if (!activePiano || !activePiano.sampler) return;
+      if (!Number.isFinite(n.midi) || n.midi < 0 || n.midi > 127) return;
+
+      const end = n.time + n.playbackDuration;
+      const struckEnd = n.time + n.duration;
+      if (end <= tNow || struckEnd <= tNow) return;
+
+      const noteName = midiToToneNote(n.midi);
+      const audibleStart = Math.max(n.time, tNow);
+      const when = toneNow + Math.max(0, (audibleStart - tNow) / tempoScale);
+      const releaseAt = toneNow + Math.max(0.03, (end - tNow) / tempoScale);
+
+      activePiano.sampler.triggerAttack(noteName, when, toneVelocity(n));
+      activePiano.sampler.triggerRelease(noteName, releaseAt);
+    }
+
+    function scheduleToneWindow() {
+      if (!isPlaying || !activePiano) return;
+
+      const tNow = currentT();
+      const toneNow = Tone.now();
+      const windowEnd = Math.min(durTotal, tNow + NOTE_SCHEDULE_LOOKAHEAD * tempoScale);
+
+      while (nextNoteIndex < playbackNotes.length) {
+        const n = playbackNotes[nextNoteIndex];
+        if (n.time > windowEnd) break;
+
+        scheduleToneNote(n, tNow, toneNow);
+        nextNoteIndex++;
+      }
     }
 
     async function play() {
@@ -319,39 +482,17 @@
       setTempoScale();
 
       setStatus('Loading piano...');
-      const inst = await ensurePiano(noteStats, { resumeCtx: true });
-      activePiano = inst;
+      const piano = await ensureTonePiano({ resumeCtx: true });
 
       // Cancel anything from a prior run/pause
       cancelScheduled();
 
-      // Schedule relative to AudioContext time
-      const base = audioCtx.currentTime + 0.06;
-
-      // Schedule notes
-      for (const n of notes) {
-        const end = n.time + n.duration;
-        if (end <= startAt) continue;
-
-        const when = base + (n.time - startAt) / tempoScale;
-        const dur = Math.max(0.02, n.duration / tempoScale);
-
-        // smplr velocity expects 0..127 (docs)
-        const vel01 = typeof n.velocity === 'number' ? n.velocity : 0.8;
-        const vel = Math.max(1, Math.min(127, Math.round(clamp(vel01, 0, 1) * 127)));
-
-        const stopFn = inst.start({
-          note: n.midi, // MIDI note numbers are supported by smplr
-          velocity: vel,
-          time: when, // AudioContext time seconds
-          duration: dur,
-        });
-
-        if (typeof stopFn === 'function') scheduledStops.push(stopFn);
-      }
-
+      activePiano = piano;
       isPlaying = true;
       startPerf = performance.now();
+      resetScheduleIndex();
+      scheduleToneWindow();
+      scheduleTimer = window.setInterval(scheduleToneWindow, NOTE_SCHEDULE_INTERVAL_MS);
     }
 
     function pause() {
@@ -378,13 +519,26 @@
       const pitchLo = range.lo;
       const pitchHi = range.hi;
       const pitchCount = pitchHi - pitchLo + 1;
-      const laneH = h / pitchCount;
+      const noteUnitH = h / (PIANO_KEY_COUNT + PEDAL_LANES.length * PEDAL_ROW_WEIGHT);
+      const laneH = noteUnitH;
+      const noteAreaH = laneH * pitchCount;
+      const pedalLaneH = laneH * PEDAL_ROW_WEIGHT;
+      const pedalTop = noteAreaH;
+      const dpr = window.devicePixelRatio || 1;
 
       const tNow = currentT();
       const viewLeftTime = Math.max(0, tNow - w / (2 * pxPerSec));
       const viewRightTime = viewLeftTime + w / pxPerSec;
 
       ctx.lineWidth = 1;
+
+      // Piano key row shading.
+      for (let p = pitchLo; p <= pitchHi; p++) {
+        if (!isBlackKey(p)) continue;
+        const y = (pitchHi - p) * laneH;
+        ctx.fillStyle = 'rgba(0,0,0,0.025)';
+        ctx.fillRect(0, y, w, laneH);
+      }
 
       // Vertical time grid
       ctx.strokeStyle = 'rgba(0,0,0,0.06)';
@@ -410,23 +564,77 @@
       }
 
       // Draw notes in view
-      for (const n of notes) {
+      for (const n of playbackNotes) {
+        if (n.midi < pitchLo || n.midi > pitchHi) continue;
+
         const nStart = n.time;
-        const nEnd = n.time + n.duration;
+        const noteEnd = n.time + n.duration;
 
-        if (nEnd < viewLeftTime) continue;
+        if (noteEnd < viewLeftTime) continue;
         if (nStart > viewRightTime) break;
-
-        const x = (nStart - viewLeftTime) * pxPerSec;
-        const width = Math.max(1, n.duration * pxPerSec);
 
         const y = (pitchHi - n.midi) * laneH;
         const nh = Math.max(1, laneH * 0.85);
 
         const a = 0.25 + 0.70 * clamp(n.velocity || 0.5, 0, 1);
-        ctx.fillStyle = 'rgba(20,40,55,' + a.toFixed(3) + ')';
-        ctx.fillRect(x, y + laneH * 0.08, width, nh);
+        drawTimedRect(
+          ctx,
+          nStart,
+          noteEnd,
+          viewLeftTime,
+          viewRightTime,
+          pxPerSec,
+          y + laneH * 0.08,
+          nh,
+          'rgba(20,40,55,' + a.toFixed(3) + ')'
+        );
       }
+
+      // Pedal rows sit below the 88-key piano range.
+      pedalLanes.forEach((lane, index) => {
+        const y = pedalTop + index * pedalLaneH;
+        const rowBottom = y + pedalLaneH;
+
+        ctx.fillStyle = index % 2 ? 'rgba(0,0,0,0.045)' : 'rgba(0,0,0,0.03)';
+        ctx.fillRect(0, y, w, pedalLaneH);
+
+        for (const segment of lane.segments) {
+          const segmentStart = segment.time;
+          const segmentEnd = segment.time + segment.duration;
+
+          if (segmentEnd < viewLeftTime) continue;
+          if (segmentStart > viewRightTime) break;
+
+          drawTimedRect(
+            ctx,
+            segmentStart,
+            segmentEnd,
+            viewLeftTime,
+            viewRightTime,
+            pxPerSec,
+            y + pedalLaneH * 0.18,
+            pedalLaneH * 0.64,
+            'rgba(20,40,55,0.58)'
+          );
+        }
+
+        ctx.strokeStyle = 'rgba(0,0,0,0.09)';
+        ctx.beginPath();
+        ctx.moveTo(0, rowBottom);
+        ctx.lineTo(w, rowBottom);
+        ctx.stroke();
+
+        ctx.font = Math.max(10 * dpr, Math.min(13 * dpr, pedalLaneH * 0.45)) + 'px sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(20,40,55,0.72)';
+        ctx.fillText(lane.label, 8 * dpr, y + pedalLaneH / 2);
+      });
+
+      ctx.strokeStyle = 'rgba(0,0,0,0.14)';
+      ctx.beginPath();
+      ctx.moveTo(0, pedalTop);
+      ctx.lineTo(w, pedalTop);
+      ctx.stroke();
 
       // Playhead
       const playX = (tNow - viewLeftTime) * pxPerSec;
@@ -517,22 +725,17 @@
         const buf = await loadArrayBuffer(url);
         midi = new Midi(buf);
         notes = collectNotes(midi);
-        noteStats = analyzeNoteStats(notes);
+        const pedalEvents = collectPedalEvents(midi);
 
-        durTotal =
-          midi.duration ||
-          (notes.length ? notes[notes.length - 1].time + notes[notes.length - 1].duration : 0);
-
-        range = noteRange(notes);
-
-        // Tighten range slightly
-        range.lo = clamp(range.lo + pitchPadding, 0, 127);
-        range.hi = clamp(range.hi - pitchPadding, 0, 127);
+        durTotal = Math.max(midi.duration || 0, noteEndTime(notes), lastPedalEventTime(pedalEvents));
+        pedalLanes = buildPedalSegments(pedalEvents, durTotal);
+        playbackNotes = buildPlaybackNotes(notes, getPedalSegments(pedalLanes, SUSTAIN_CC));
+        durTotal = Math.max(durTotal, noteEndTime(playbackNotes, 'playbackDuration'));
 
         playBtn.disabled = false;
         playBtn.textContent = 'Play';
 
-        warmPianoSoon(noteStats);
+        warmPianoSoon();
 
         requestAnimationFrame(draw);
       } catch (e) {
