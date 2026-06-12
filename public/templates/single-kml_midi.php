@@ -182,6 +182,11 @@ if (function_exists('do_shortcode')) {
           <span class="kml-tempo-val">100%</span>
         </label>
 
+        <label class="kml-label">Volume
+          <input class="kml-volume" type="range" min="0" max="200" value="100">
+          <span class="kml-volume-val">100%</span>
+        </label>
+
         <label class="kml-label">Zoom
           <input class="kml-zoom" type="range" min="20" max="220" value="90">
           <span class="kml-zoom-val">90</span>

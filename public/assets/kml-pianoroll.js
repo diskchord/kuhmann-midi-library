@@ -9,12 +9,13 @@
   const PEDAL_ROW_WEIGHT = 3;
   const SUSTAIN_CC = 64;
   const PEDAL_ON_THRESHOLD = 0.5;
-  const PIANO_VELOCITY_SCALE = 0.6;
-  const PIANO_MAX_VELOCITY = 0.62;
+  const PIANO_VELOCITY_SCALE = 0.75;
+  const PIANO_MAX_VELOCITY = 0.8;
   const PIANO_NOTE_ATTACK = 0.012;
   const PIANO_NOTE_RELEASE = 0.45;
-  const PIANO_OUTPUT_VOLUME_DB = -14;
-  const PIANO_MASTER_GAIN = 0.38;
+  const PIANO_OUTPUT_VOLUME_DB = -7;
+  const PIANO_MASTER_GAIN = 0.72;
+  const PIANO_VOLUME_DEFAULT = 100;
   const PIANO_LOWPASS_CUTOFF_HZ = 12000;
   const PIANO_SAMPLE_BASE_URL = 'https://tambien.github.io/Piano/audio/';
   const PIANO_SAMPLE_VELOCITY = 8;
@@ -364,6 +365,8 @@
     const stopBtn = el.querySelector('.kml-stop');
     const tempo = el.querySelector('.kml-tempo');
     const tempoVal = el.querySelector('.kml-tempo-val');
+    const volume = el.querySelector('.kml-volume');
+    const volumeVal = el.querySelector('.kml-volume-val');
     const zoom = el.querySelector('.kml-zoom');
     const zoomVal = el.querySelector('.kml-zoom-val');
     const timeEl = el.querySelector('.kml-time');
@@ -381,6 +384,7 @@
 
     // Visual params
     let pxPerSec = Number(zoom.value || 90);
+    let volumeScale = PIANO_VOLUME_DEFAULT / 100;
 
     // Playback state
     let tempoScale = 1.0; // 1.0 = normal
@@ -405,6 +409,38 @@
     function setZoom() {
       pxPerSec = Number(zoom.value || 90);
       zoomVal.textContent = String(pxPerSec);
+    }
+
+    function applyPianoVolume() {
+      if (!activePiano || !activePiano.masterGain || !activePiano.masterGain.gain) return;
+
+      const target = PIANO_MASTER_GAIN * volumeScale;
+      const gain = activePiano.masterGain.gain;
+
+      try {
+        if (typeof gain.rampTo === 'function') {
+          gain.rampTo(target, 0.03);
+        } else {
+          gain.value = target;
+        }
+      } catch (e) {
+        try {
+          gain.value = target;
+        } catch (e1) {}
+      }
+    }
+
+    function setVolume() {
+      if (!volume) {
+        volumeScale = PIANO_VOLUME_DEFAULT / 100;
+        applyPianoVolume();
+        return;
+      }
+
+      const pct = clamp(Number(volume.value || PIANO_VOLUME_DEFAULT), 0, 200);
+      volumeScale = pct / 100;
+      if (volumeVal) volumeVal.textContent = Math.round(pct) + '%';
+      applyPianoVolume();
     }
 
     function currentT() {
@@ -488,6 +524,7 @@
       cancelScheduled();
 
       activePiano = piano;
+      applyPianoVolume();
       isPlaying = true;
       startPerf = performance.now();
       resetScheduleIndex();
@@ -713,6 +750,7 @@
     });
 
     zoom.addEventListener('input', () => setZoom());
+    if (volume) volume.addEventListener('input', () => setVolume());
 
     // ---- Load MIDI and start drawing ----
     (async () => {
@@ -721,6 +759,7 @@
         playBtn.textContent = 'Loading...';
         setZoom();
         setTempoScale();
+        setVolume();
 
         const buf = await loadArrayBuffer(url);
         midi = new Midi(buf);
