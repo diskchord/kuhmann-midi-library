@@ -5,11 +5,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class KML_Public {
 
+	private const PLAYER_UPLOAD_SUBDIR = 'kml-midi-player-uploads';
+
 	public static function init(): void {
 		add_action( 'init', array( __CLASS__, 'add_rewrite_rules' ) );
 		add_filter( 'query_vars', array( __CLASS__, 'query_vars' ) );
 		add_action( 'template_redirect', array( __CLASS__, 'maybe_serve_download' ) );
 		add_action( 'template_redirect', array( __CLASS__, 'maybe_count_file_view' ), 20 );
+		add_action( 'kml_purge_player_uploads', array( __CLASS__, 'purge_player_uploads' ) );
 
 		add_filter( 'template_include', array( __CLASS__, 'template_loader' ) );
 
@@ -24,21 +27,37 @@ final class KML_Public {
 	public static function add_rewrite_rules(): void {
 		// /midi-download/{post_id}/
 		add_rewrite_rule( '^midi-download/([0-9]+)/?$', 'index.php?kml_download=$matches[1]', 'top' );
+
+		// /midi-player/{path-relative-to-web-root}
+		add_rewrite_rule( '^midi-player/(.+?)/?$', 'index.php?kml_player_path=$matches[1]', 'top' );
 	}
 
 	public static function query_vars( array $vars ): array {
 		$vars[] = 'kml_download';
+		$vars[] = 'kml_player_path';
 		return $vars;
 	}
 
 	public static function enqueue_assets(): void {
 		$enqueue = false;
+		$enqueue_pianoroll = false;
 
 		if ( is_singular( KML_Post_Types::POST_TYPE ) || is_post_type_archive( KML_Post_Types::POST_TYPE ) || is_tax( KML_Post_Types::TAX_FOLDER ) ) {
 			$enqueue = true;
 		} else {
 			global $post;
-			if ( $post && isset( $post->post_content ) && has_shortcode( (string) $post->post_content, 'kml_library' ) ) {
+			$post_content = $post && isset( $post->post_content ) ? (string) $post->post_content : '';
+			$enqueue_pianoroll = $post_content && (
+				has_shortcode( $post_content, 'kml_midi_player' ) ||
+				has_shortcode( $post_content, 'kml_player' )
+			);
+			if (
+				$post_content &&
+				(
+					has_shortcode( $post_content, 'kml_library' ) ||
+					$enqueue_pianoroll
+				)
+			) {
 				$enqueue = true;
 			}
 		}
@@ -62,6 +81,10 @@ final class KML_Public {
 			true
 		);
 
+		if ( $enqueue_pianoroll ) {
+			self::enqueue_pianoroll_assets();
+		}
+
 		// Optional browser MIDI player: only on single pages AND only if a public URL is available.
 		if ( is_singular( KML_Post_Types::POST_TYPE ) ) {
 			$post_id = get_the_ID();
@@ -78,7 +101,59 @@ final class KML_Public {
 		}
 	}
 
+	public static function enqueue_pianoroll_assets(): void {
+		wp_enqueue_style(
+			'kml-public',
+			KML_PLUGIN_URL . 'public/assets/css/kml-public.css',
+			array(),
+			KML_VERSION
+		);
+
+		wp_enqueue_script(
+			'kml-public',
+			KML_PLUGIN_URL . 'public/assets/js/kml-public.js',
+			array(),
+			KML_VERSION,
+			true
+		);
+
+		wp_enqueue_script(
+			'tonejs',
+			'https://cdn.jsdelivr.net/npm/tone@14.8.49/build/Tone.js',
+			array(),
+			null,
+			true
+		);
+
+		wp_enqueue_script(
+			'tonejs-midi',
+			plugins_url( 'public/assets/Midi.js', KML_PLUGIN_FILE ),
+			array(),
+			'2.0.28',
+			true
+		);
+
+		$pianoroll_path = KML_PLUGIN_DIR . 'public/assets/kml-pianoroll.js';
+		$pianoroll_ver  = file_exists( $pianoroll_path ) ? (string) filemtime( $pianoroll_path ) : KML_VERSION;
+
+		wp_enqueue_script(
+			'kml-pianoroll',
+			plugins_url( 'public/assets/kml-pianoroll.js', KML_PLUGIN_FILE ),
+			array( 'tonejs', 'tonejs-midi' ),
+			$pianoroll_ver,
+			true
+		);
+	}
+
 	public static function template_loader( string $template ): string {
+		if ( self::is_direct_player_request() ) {
+			$theme = locate_template( array( 'kml-midi-player.php', 'midi-player.php' ) );
+			if ( $theme ) {
+				return $theme;
+			}
+			return KML_PLUGIN_DIR . 'public/templates/midi-player.php';
+		}
+
 		if ( is_singular( KML_Post_Types::POST_TYPE ) ) {
 			$theme = locate_template( array( 'single-' . KML_Post_Types::POST_TYPE . '.php' ) );
 			if ( $theme ) {
@@ -119,6 +194,197 @@ final class KML_Public {
 		return esc_url_raw( home_url( user_trailingslashit( 'midi-download/' . $post_id ) ) );
 	}
 
+	public static function is_direct_player_request(): bool {
+		return '' !== (string) get_query_var( 'kml_player_path', '' );
+	}
+
+	public static function get_direct_player_file(): array {
+		$request_path = (string) get_query_var( 'kml_player_path', '' );
+		$request_path = rawurldecode( $request_path );
+		$request_path = str_replace( '\\', '/', $request_path );
+		$request_path = preg_replace( '#/+#', '/', $request_path );
+		$request_path = ltrim( trim( (string) $request_path ), '/' );
+
+		if ( '' === $request_path || false !== strpos( $request_path, "\0" ) ) {
+			return self::direct_player_error( __( 'Missing MIDI file path.', 'kuhmann-midi-library' ) );
+		}
+
+		$parts = explode( '/', $request_path );
+		foreach ( $parts as $part ) {
+			if ( '' === $part || '.' === $part || '..' === $part ) {
+				return self::direct_player_error( __( 'Invalid MIDI file path.', 'kuhmann-midi-library' ) );
+			}
+		}
+
+		$ext = strtolower( pathinfo( $request_path, PATHINFO_EXTENSION ) );
+		if ( ! in_array( $ext, array( 'mid', 'midi' ), true ) ) {
+			return self::direct_player_error( __( 'Only .mid and .midi files can be loaded by this player.', 'kuhmann-midi-library' ) );
+		}
+
+		$document_root = self::get_document_root();
+		$real_root     = $document_root ? realpath( $document_root ) : '';
+		if ( ! $real_root || ! is_dir( $real_root ) ) {
+			return self::direct_player_error( __( 'The web root could not be resolved.', 'kuhmann-midi-library' ) );
+		}
+
+		$abs_path  = rtrim( $real_root, "/\\" ) . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $request_path );
+		$real_file = realpath( $abs_path );
+
+		if ( ! $real_file || ! is_file( $real_file ) || ! is_readable( $real_file ) || ! self::path_is_inside( $real_file, $real_root ) ) {
+			return self::direct_player_error( __( 'The requested MIDI file could not be found.', 'kuhmann-midi-library' ) );
+		}
+
+		$url_path = implode( '/', array_map( 'rawurlencode', explode( '/', $request_path ) ) );
+
+		return array(
+			'found'    => true,
+			'error'    => '',
+			'relpath'  => $request_path,
+			'abs_path' => $real_file,
+			'file_url' => esc_url_raw( home_url( '/' . $url_path ) ),
+			'filename' => basename( $request_path ),
+			'filesize' => (int) @filesize( $real_file ),
+			'mtime'    => (int) @filemtime( $real_file ),
+		);
+	}
+
+	public static function get_uploaded_player_file( string $filename ): array {
+		$filename = sanitize_file_name( wp_basename( rawurldecode( $filename ) ) );
+		if ( '' === $filename ) {
+			return self::direct_player_error( __( 'Missing uploaded MIDI file.', 'kuhmann-midi-library' ) );
+		}
+
+		$ext = strtolower( pathinfo( $filename, PATHINFO_EXTENSION ) );
+		if ( ! in_array( $ext, array( 'mid', 'midi' ), true ) ) {
+			return self::direct_player_error( __( 'Only .mid and .midi files can be loaded by this player.', 'kuhmann-midi-library' ) );
+		}
+
+		$upload_dir = self::get_player_upload_dir( false );
+		if ( empty( $upload_dir['dir'] ) || empty( $upload_dir['url'] ) ) {
+			return self::direct_player_error( __( 'The player upload directory could not be resolved.', 'kuhmann-midi-library' ) );
+		}
+
+		$abs_path  = trailingslashit( $upload_dir['dir'] ) . $filename;
+		$real_root = realpath( $upload_dir['dir'] );
+		$real_file = realpath( $abs_path );
+
+		if ( ! $real_root || ! $real_file || ! is_file( $real_file ) || ! is_readable( $real_file ) || ! self::path_is_inside( $real_file, $real_root ) ) {
+			return self::direct_player_error( __( 'The uploaded MIDI file could not be found.', 'kuhmann-midi-library' ) );
+		}
+
+		return array(
+			'found'    => true,
+			'error'    => '',
+			'relpath'  => self::PLAYER_UPLOAD_SUBDIR . '/' . $filename,
+			'abs_path' => $real_file,
+			'file_url' => esc_url_raw( trailingslashit( $upload_dir['url'] ) . rawurlencode( $filename ) ),
+			'filename' => $filename,
+			'filesize' => (int) @filesize( $real_file ),
+			'mtime'    => (int) @filemtime( $real_file ),
+		);
+	}
+
+	public static function save_player_upload( array $file ): array {
+		self::purge_player_uploads( false );
+
+		$error_code = isset( $file['error'] ) ? (int) $file['error'] : UPLOAD_ERR_NO_FILE;
+		if ( UPLOAD_ERR_OK !== $error_code ) {
+			return self::direct_player_error( self::upload_error_message( $error_code ) );
+		}
+
+		$original_name = isset( $file['name'] ) ? (string) $file['name'] : '';
+		$tmp_name      = isset( $file['tmp_name'] ) ? (string) $file['tmp_name'] : '';
+		$size          = isset( $file['size'] ) ? (int) $file['size'] : 0;
+		$ext           = strtolower( pathinfo( $original_name, PATHINFO_EXTENSION ) );
+
+		if ( ! in_array( $ext, array( 'mid', 'midi' ), true ) ) {
+			return self::direct_player_error( __( 'Please upload a .mid or .midi file.', 'kuhmann-midi-library' ) );
+		}
+
+		$max_size = (int) apply_filters( 'kml_midi_player_upload_max_size', 20 * 1024 * 1024 );
+		if ( $max_size > 0 && $size > $max_size ) {
+			return self::direct_player_error(
+				sprintf(
+					/* translators: %s: formatted maximum upload size. */
+					__( 'The MIDI file is larger than the %s upload limit.', 'kuhmann-midi-library' ),
+					size_format( $max_size )
+				)
+			);
+		}
+
+		if ( '' === $tmp_name || ! is_uploaded_file( $tmp_name ) ) {
+			return self::direct_player_error( __( 'The uploaded file could not be read.', 'kuhmann-midi-library' ) );
+		}
+
+		$upload_dir = self::get_player_upload_dir( true );
+		if ( empty( $upload_dir['dir'] ) || ! is_dir( $upload_dir['dir'] ) || ! is_writable( $upload_dir['dir'] ) ) {
+			return self::direct_player_error( __( 'The player upload directory is not writable.', 'kuhmann-midi-library' ) );
+		}
+
+		$base_name = sanitize_file_name( pathinfo( $original_name, PATHINFO_FILENAME ) );
+		if ( '' === $base_name ) {
+			$base_name = 'midi';
+		}
+
+		$filename = wp_unique_filename(
+			$upload_dir['dir'],
+			$base_name . '-' . wp_generate_password( 8, false, false ) . '.' . $ext
+		);
+		$target = trailingslashit( $upload_dir['dir'] ) . $filename;
+
+		if ( ! @move_uploaded_file( $tmp_name, $target ) ) {
+			return self::direct_player_error( __( 'The uploaded MIDI file could not be saved.', 'kuhmann-midi-library' ) );
+		}
+
+		@chmod( $target, 0644 );
+
+		return self::get_uploaded_player_file( $filename );
+	}
+
+	public static function schedule_player_upload_purge(): void {
+		if ( wp_next_scheduled( 'kml_purge_player_uploads' ) ) {
+			return;
+		}
+
+		wp_schedule_event( self::next_midnight_timestamp(), 'daily', 'kml_purge_player_uploads' );
+	}
+
+	public static function purge_player_uploads( bool $purge_all = true ): void {
+		$upload_dir = self::get_player_upload_dir( false );
+		$dir        = ! empty( $upload_dir['dir'] ) ? (string) $upload_dir['dir'] : '';
+
+		if ( '' === $dir || ! is_dir( $dir ) || ! is_readable( $dir ) ) {
+			return;
+		}
+
+		$today_start = null;
+		if ( ! $purge_all ) {
+			$today_start = new DateTimeImmutable( 'today 00:00:00', wp_timezone() );
+		}
+
+		foreach ( new DirectoryIterator( $dir ) as $item ) {
+			if ( $item->isDot() || ! $item->isFile() ) {
+				continue;
+			}
+
+			$filename = $item->getFilename();
+			if ( 'index.html' === $filename ) {
+				continue;
+			}
+
+			$ext = strtolower( pathinfo( $filename, PATHINFO_EXTENSION ) );
+			if ( ! in_array( $ext, array( 'mid', 'midi' ), true ) ) {
+				continue;
+			}
+
+			if ( $today_start && $item->getMTime() >= $today_start->getTimestamp() ) {
+				continue;
+			}
+
+			@unlink( $item->getPathname() );
+		}
+	}
+
 	public static function maybe_count_file_view(): void {
 		if ( ! is_singular( KML_Post_Types::POST_TYPE ) || is_preview() || is_feed() || wp_doing_ajax() ) {
 			return;
@@ -142,6 +408,18 @@ final class KML_Public {
 	}
 
 	public static function get_current_page_summary(): string {
+		if ( self::is_direct_player_request() ) {
+			$file = self::get_direct_player_file();
+			if ( ! empty( $file['found'] ) ) {
+				return sprintf(
+					/* translators: %s: MIDI file name. */
+					__( 'Browser piano-roll MIDI player for %s.', 'kuhmann-midi-library' ),
+					(string) $file['filename']
+				);
+			}
+			return '';
+		}
+
 		if ( is_singular( KML_Post_Types::POST_TYPE ) ) {
 			return self::get_file_page_summary( (int) get_queried_object_id() );
 		}
@@ -400,6 +678,92 @@ final class KML_Public {
 		}
 
 		return (int) get_post_meta( $post_id, $meta_key, true );
+	}
+
+	private static function get_document_root(): string {
+		$root = isset( $_SERVER['DOCUMENT_ROOT'] ) ? (string) wp_unslash( $_SERVER['DOCUMENT_ROOT'] ) : '';
+		$root = rtrim( $root, "/\\ \t\n\r\0\x0B" );
+
+		/**
+		 * Allows hosts with unusual WordPress/web-root layouts to override the
+		 * filesystem root used by /midi-player/{path}.
+		 */
+		$root = (string) apply_filters( 'kml_midi_player_document_root', $root );
+		$root = rtrim( $root, "/\\ \t\n\r\0\x0B" );
+
+		if ( '' !== $root && is_dir( $root ) ) {
+			return $root;
+		}
+
+		return rtrim( ABSPATH, "/\\ \t\n\r\0\x0B" );
+	}
+
+	private static function get_player_upload_dir( bool $create ): array {
+		$uploads = wp_upload_dir();
+		if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) || empty( $uploads['baseurl'] ) ) {
+			return array(
+				'dir' => '',
+				'url' => '',
+			);
+		}
+
+		$dir = trailingslashit( (string) $uploads['basedir'] ) . self::PLAYER_UPLOAD_SUBDIR;
+		$url = trailingslashit( (string) $uploads['baseurl'] ) . self::PLAYER_UPLOAD_SUBDIR;
+
+		if ( $create && ! is_dir( $dir ) ) {
+			wp_mkdir_p( $dir );
+		}
+
+		if ( $create && is_dir( $dir ) ) {
+			$index_file = trailingslashit( $dir ) . 'index.html';
+			if ( ! file_exists( $index_file ) ) {
+				@file_put_contents( $index_file, '' );
+			}
+		}
+
+		return array(
+			'dir' => $dir,
+			'url' => $url,
+		);
+	}
+
+	private static function next_midnight_timestamp(): int {
+		$midnight = new DateTimeImmutable( 'tomorrow 00:00:00', wp_timezone() );
+		return $midnight->getTimestamp();
+	}
+
+	private static function upload_error_message( int $error_code ): string {
+		switch ( $error_code ) {
+			case UPLOAD_ERR_INI_SIZE:
+			case UPLOAD_ERR_FORM_SIZE:
+				return __( 'The uploaded MIDI file is too large.', 'kuhmann-midi-library' );
+			case UPLOAD_ERR_PARTIAL:
+				return __( 'The MIDI file upload did not finish.', 'kuhmann-midi-library' );
+			case UPLOAD_ERR_NO_FILE:
+				return __( 'Please choose a MIDI file to upload.', 'kuhmann-midi-library' );
+			default:
+				return __( 'The MIDI file could not be uploaded.', 'kuhmann-midi-library' );
+		}
+	}
+
+	private static function path_is_inside( string $path, string $root ): bool {
+		$path = str_replace( '\\', '/', $path );
+		$root = rtrim( str_replace( '\\', '/', $root ), '/' ) . '/';
+
+		return 0 === strpos( $path, $root );
+	}
+
+	private static function direct_player_error( string $message ): array {
+		return array(
+			'found'    => false,
+			'error'    => $message,
+			'relpath'  => '',
+			'abs_path' => '',
+			'file_url' => '',
+			'filename' => '',
+			'filesize' => 0,
+			'mtime'    => 0,
+		);
 	}
 
 	private static function get_post_folder_label( int $post_id ): string {

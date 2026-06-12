@@ -7,6 +7,8 @@ final class KML_Shortcodes {
 
 	public static function init(): void {
 		add_shortcode( 'kml_library', array( __CLASS__, 'shortcode_library' ) );
+		add_shortcode( 'kml_midi_player', array( __CLASS__, 'shortcode_midi_player' ) );
+		add_shortcode( 'kml_player', array( __CLASS__, 'shortcode_midi_player' ) );
 	}
 
 	public static function shortcode_library( array $atts = array() ): string {
@@ -36,6 +38,89 @@ final class KML_Shortcodes {
 			self::render_root( $per_page );
 		}
 
+		return (string) ob_get_clean();
+	}
+
+	public static function shortcode_midi_player( array $atts = array() ): string {
+		$atts = shortcode_atts(
+			array(
+				'src'    => '',
+				'upload' => '1',
+			),
+			$atts,
+			'kml_midi_player'
+		);
+
+		KML_Public::enqueue_pianoroll_assets();
+
+		$file_url = '';
+		$filename = '';
+		$message = '';
+		$message_class = 'kml-upload-message';
+
+		if ( self::is_player_upload_request() ) {
+			if ( ! isset( $_POST['kml_midi_player_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['kml_midi_player_nonce'] ) ), 'kml_midi_player_upload' ) ) {
+				$message = __( 'The upload could not be verified. Please try again.', 'kuhmann-midi-library' );
+				$message_class .= ' kml-upload-error';
+			} else {
+				$upload = isset( $_FILES['kml_midi_file'] ) && is_array( $_FILES['kml_midi_file'] )
+					? KML_Public::save_player_upload( $_FILES['kml_midi_file'] )
+					: KML_Public::get_uploaded_player_file( '' );
+
+				if ( ! empty( $upload['found'] ) ) {
+					$file_url = (string) $upload['file_url'];
+					$filename = (string) $upload['filename'];
+					$message = __( 'Loaded MIDI file.', 'kuhmann-midi-library' );
+					$message_class .= ' kml-upload-success';
+				} else {
+					$message = ! empty( $upload['error'] ) ? (string) $upload['error'] : __( 'The MIDI file could not be uploaded.', 'kuhmann-midi-library' );
+					$message_class .= ' kml-upload-error';
+				}
+			}
+		}
+
+		if ( '' === $file_url && isset( $_GET['kml_uploaded_midi'] ) ) {
+			$uploaded = KML_Public::get_uploaded_player_file( sanitize_text_field( wp_unslash( $_GET['kml_uploaded_midi'] ) ) );
+			if ( ! empty( $uploaded['found'] ) ) {
+				$file_url = (string) $uploaded['file_url'];
+				$filename = (string) $uploaded['filename'];
+			}
+		}
+
+		if ( '' === $file_url && '' !== trim( (string) $atts['src'] ) ) {
+			$file_url = self::normalize_player_src( (string) $atts['src'] );
+			$filename = wp_basename( parse_url( $file_url, PHP_URL_PATH ) ?: $file_url );
+		}
+
+		$show_upload = self::truthy_shortcode_value( (string) $atts['upload'] );
+		$upload_id = 'kml_midi_upload_' . wp_generate_uuid4();
+
+		ob_start();
+		?>
+		<div class="kml-midi-player-tool">
+			<?php if ( $show_upload ) : ?>
+				<form class="kml-player-upload" method="post" enctype="multipart/form-data">
+					<?php echo wp_nonce_field( 'kml_midi_player_upload', 'kml_midi_player_nonce', true, false ); ?>
+					<input type="hidden" name="kml_midi_player_upload" value="1">
+					<div class="kml-upload-label"><?php echo esc_html__( 'Upload MIDI', 'kuhmann-midi-library' ); ?></div>
+					<div class="kml-upload-picker">
+						<label class="kml-upload-button" for="<?php echo esc_attr( $upload_id ); ?>"><?php echo esc_html__( 'Choose MIDI', 'kuhmann-midi-library' ); ?></label>
+						<input id="<?php echo esc_attr( $upload_id ); ?>" class="kml-upload-input" type="file" name="kml_midi_file" accept=".mid,.midi,audio/midi,audio/x-midi">
+						<span class="kml-upload-file-name" data-default="<?php echo esc_attr__( 'No file selected', 'kuhmann-midi-library' ); ?>"><?php echo esc_html__( 'No file selected', 'kuhmann-midi-library' ); ?></span>
+					</div>
+					<button type="submit" class="kml-btn"><?php echo esc_html__( 'Load', 'kuhmann-midi-library' ); ?></button>
+				</form>
+			<?php endif; ?>
+
+			<?php if ( $message ) : ?>
+				<div class="<?php echo esc_attr( $message_class ); ?>"><?php echo esc_html( $message ); ?></div>
+			<?php endif; ?>
+
+			<?php if ( $file_url ) : ?>
+				<?php self::render_piano_roll( $file_url, $filename ); ?>
+			<?php endif; ?>
+		</div>
+		<?php
 		return (string) ob_get_clean();
 	}
 
@@ -204,6 +289,65 @@ final class KML_Shortcodes {
 		echo '<input type="search" name="kml_q" value="' . esc_attr( $search ) . '" placeholder="' . esc_attr__( 'Search MIDI files…', 'kuhmann-midi-library' ) . '" />';
 		echo '<button type="submit">' . esc_html__( 'Search', 'kuhmann-midi-library' ) . '</button>';
 		echo '</form>';
+	}
+
+	private static function render_piano_roll( string $file_url, string $filename = '' ): void {
+		$uid = 'kml_shortcode_player_' . wp_generate_uuid4();
+		?>
+		<section class="kml-player">
+			<?php if ( $filename ) : ?>
+				<h2 class="kml-player-title"><?php echo esc_html( $filename ); ?></h2>
+			<?php endif; ?>
+
+			<div class="kml-roll" data-midi-url="<?php echo esc_url( $file_url ); ?>" id="<?php echo esc_attr( $uid ); ?>">
+				<div class="kml-roll-controls">
+					<button type="button" class="kml-btn kml-play"><?php echo esc_html__( 'Play', 'kuhmann-midi-library' ); ?></button>
+					<button type="button" class="kml-btn kml-stop"><?php echo esc_html__( 'Stop', 'kuhmann-midi-library' ); ?></button>
+
+					<label class="kml-label"><?php echo esc_html__( 'Tempo', 'kuhmann-midi-library' ); ?>
+						<input class="kml-tempo" type="range" min="50" max="160" value="100">
+						<span class="kml-tempo-val">100%</span>
+					</label>
+
+					<label class="kml-label"><?php echo esc_html__( 'Volume', 'kuhmann-midi-library' ); ?>
+						<input class="kml-volume" type="range" min="0" max="200" value="100">
+						<span class="kml-volume-val">100%</span>
+					</label>
+
+					<label class="kml-label"><?php echo esc_html__( 'Zoom', 'kuhmann-midi-library' ); ?>
+						<input class="kml-zoom" type="range" min="20" max="220" value="90">
+						<span class="kml-zoom-val">90</span>
+					</label>
+
+					<span class="kml-time">0:00 / --:--</span>
+				</div>
+
+				<canvas class="kml-canvas" height="560"></canvas>
+			</div>
+		</section>
+		<?php
+	}
+
+	private static function is_player_upload_request(): bool {
+		return 'POST' === ( isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '' )
+			&& isset( $_POST['kml_midi_player_upload'] );
+	}
+
+	private static function normalize_player_src( string $src ): string {
+		$src = trim( $src );
+		if ( '' === $src ) {
+			return '';
+		}
+
+		if ( 0 === strpos( $src, '/' ) ) {
+			return esc_url_raw( home_url( $src ) );
+		}
+
+		return esc_url_raw( $src );
+	}
+
+	private static function truthy_shortcode_value( string $value ): bool {
+		return ! in_array( strtolower( trim( $value ) ), array( '0', 'false', 'no', 'off' ), true );
 	}
 
 	private static function render_breadcrumbs( WP_Term $term ): void {

@@ -9,8 +9,6 @@
   const PEDAL_ROW_WEIGHT = 3;
   const SUSTAIN_CC = 64;
   const PEDAL_ON_THRESHOLD = 0.5;
-  const PIANO_VELOCITY_SCALE = 0.75;
-  const PIANO_MAX_VELOCITY = 0.8;
   const PIANO_NOTE_ATTACK = 0.012;
   const PIANO_NOTE_RELEASE = 0.45;
   const PIANO_OUTPUT_VOLUME_DB = -7;
@@ -339,9 +337,7 @@
   }
 
   function toneVelocity(note) {
-    const vel01 = typeof note.velocity === 'number' ? note.velocity : 0.8;
-    const scaled = clamp(vel01, 0, 1) * PIANO_VELOCITY_SCALE;
-    return Math.max(0.01, Math.min(PIANO_MAX_VELOCITY, scaled));
+    return typeof note.velocity === 'number' ? clamp(note.velocity, 0, 1) : 0.8;
   }
 
   function drawTimedRect(ctx, start, end, viewLeftTime, viewRightTime, pxPerSec, y, height, fillStyle) {

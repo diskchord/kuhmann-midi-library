@@ -16,7 +16,8 @@ The plugin was built for publishing a navigable Kuhmann / Disklavier World MIDI 
 - Tracks internal per-file view and download counts in the WordPress admin.
 - Adds meaningful meta descriptions and generated page summaries for archive, folder, and single MIDI download pages.
 - Adds a beta browser playback / piano-roll view when a public file URL is configured.
-- Includes a `[kml_library]` shortcode for embedding a browsable library.
+- Includes `[kml_library]` for embedding a browsable library and `[kml_midi_player]` for a standalone upload/playback tool.
+- Supports temporary public MIDI uploads for the standalone player, purged nightly at midnight.
 - Supports WP-Cron indexing and WP-CLI indexing/status commands.
 
 ## Requirements
@@ -72,6 +73,13 @@ The indexer processes files in batches through WP-Cron. Increase the batch size 
 - MIDI archive: `/midi/`
 - Folder archive: `/midi-folder/{folder}/`
 - Download endpoint: `/midi-download/{post_id}/`
+- Direct player endpoint: `/midi-player/{path-relative-to-web-root}`
+
+For example, if a MIDI file is publicly available at `/uploads/midifile.mid`, open:
+
+```text
+https://example.com/midi-player/uploads/midifile.mid
+```
 
 ### Shortcode
 
@@ -91,6 +99,20 @@ Set the number of files shown per page:
 
 ```text
 [kml_library per_page="100"]
+```
+
+Render a standalone MIDI player with upload support:
+
+```text
+[kml_midi_player]
+```
+
+Uploaded files are stored in a public temporary uploads folder and are purged every night at midnight. The upload option is only rendered by this standalone player shortcode; individual indexed MIDI pages do not show it.
+
+Render a standalone player for a specific public MIDI URL or root-relative path:
+
+```text
+[kml_midi_player src="/uploads/midifile.mid" upload="0"]
 ```
 
 ### WP-CLI
