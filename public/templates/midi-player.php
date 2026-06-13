@@ -25,11 +25,14 @@ $relpath  = ! empty( $player_file['relpath'] ) ? (string) $player_file['relpath'
 $filesize = ! empty( $player_file['filesize'] ) ? (int) $player_file['filesize'] : 0;
 $mtime    = ! empty( $player_file['mtime'] ) ? (int) $player_file['mtime'] : 0;
 
+$style_path = KML_PLUGIN_DIR . 'public/assets/css/kml-public.css';
+$style_ver  = file_exists( $style_path ) ? (string) filemtime( $style_path ) : KML_VERSION;
+
 wp_enqueue_style(
 	'kml-public',
 	KML_PLUGIN_URL . 'public/assets/css/kml-public.css',
 	array(),
-	KML_VERSION
+	$style_ver
 );
 
 wp_enqueue_script(

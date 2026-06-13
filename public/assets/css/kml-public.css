@@ -207,9 +207,10 @@
 .kml-render-controls {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 10px 12px;
+	gap: 14px 12px;
 	align-items: center;
-	margin: 18px 0 6px;
+	margin: 0;
+	padding: 18px 18px 8px;
 }
 
 .kml-label {
@@ -243,8 +244,8 @@
 
 .kml-render-progress {
 	position: relative;
-	flex: 1 1 220px;
-	max-width: 360px;
+	flex: 0 0 100%;
+	max-width: none;
 	height: 8px;
 	overflow: hidden;
 	border-radius: 999px;
@@ -335,7 +336,8 @@
 	}
 
 	.kml-render-controls {
-		margin: 16px 0 8px;
+		gap: 12px;
+		padding: 16px 12px 8px;
 	}
 
 	.kml-player-upload {

@@ -41,6 +41,8 @@ final class KML_Public {
 	public static function enqueue_assets(): void {
 		$enqueue = false;
 		$enqueue_pianoroll = false;
+		$style_ver = self::asset_version( 'public/assets/css/kml-public.css' );
+		$script_ver = self::asset_version( 'public/assets/js/kml-public.js' );
 
 		if ( is_singular( KML_Post_Types::POST_TYPE ) || is_post_type_archive( KML_Post_Types::POST_TYPE ) || is_tax( KML_Post_Types::TAX_FOLDER ) ) {
 			$enqueue = true;
@@ -70,14 +72,14 @@ final class KML_Public {
 			'kml-public',
 			KML_PLUGIN_URL . 'public/assets/css/kml-public.css',
 			array(),
-			KML_VERSION
+			$style_ver
 		);
 
 		wp_enqueue_script(
 			'kml-public',
 			KML_PLUGIN_URL . 'public/assets/js/kml-public.js',
 			array(),
-			KML_VERSION,
+			$script_ver,
 			true
 		);
 
@@ -102,18 +104,21 @@ final class KML_Public {
 	}
 
 	public static function enqueue_pianoroll_assets(): void {
+		$style_ver = self::asset_version( 'public/assets/css/kml-public.css' );
+		$script_ver = self::asset_version( 'public/assets/js/kml-public.js' );
+
 		wp_enqueue_style(
 			'kml-public',
 			KML_PLUGIN_URL . 'public/assets/css/kml-public.css',
 			array(),
-			KML_VERSION
+			$style_ver
 		);
 
 		wp_enqueue_script(
 			'kml-public',
 			KML_PLUGIN_URL . 'public/assets/js/kml-public.js',
 			array(),
-			KML_VERSION,
+			$script_ver,
 			true
 		);
 
@@ -143,6 +148,12 @@ final class KML_Public {
 			$pianoroll_ver,
 			true
 		);
+	}
+
+	private static function asset_version( string $relative_path ): string {
+		$path = KML_PLUGIN_DIR . ltrim( $relative_path, '/' );
+
+		return file_exists( $path ) ? (string) filemtime( $path ) : KML_VERSION;
 	}
 
 	public static function template_loader( string $template ): string {
