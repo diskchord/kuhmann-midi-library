@@ -17,6 +17,9 @@
   const PIANO_LOWPASS_CUTOFF_HZ = 12000;
   const PIANO_SAMPLE_BASE_URL = 'https://tambien.github.io/Piano/audio/';
   const PIANO_SAMPLE_VELOCITY = 8;
+  const AUDIO_RENDER_CHANNELS = 2;
+  const AUDIO_RENDER_SAMPLE_RATE = 44100;
+  const AUDIO_RENDER_TAIL_SECONDS = 1.2;
   const NOTE_SCHEDULE_LOOKAHEAD = 0.1;
   const NOTE_SCHEDULE_INTERVAL_MS = 25;
   const PIANO_SAMPLE_ROOTS = [
@@ -340,6 +343,192 @@
     return typeof note.velocity === 'number' ? clamp(note.velocity, 0, 1) : 0.8;
   }
 
+  function audioBufferFromToneBuffer(buffer) {
+    if (buffer && typeof buffer.getChannelData === 'function') return buffer;
+    if (buffer && typeof buffer.get === 'function') return buffer.get();
+    if (buffer && buffer._buffer && typeof buffer._buffer.getChannelData === 'function') {
+      return buffer._buffer;
+    }
+    throw new Error('Rendered audio buffer is unavailable.');
+  }
+
+  function writeAscii(view, offset, text) {
+    for (let i = 0; i < text.length; i++) {
+      view.setUint8(offset + i, text.charCodeAt(i));
+    }
+  }
+
+  function yieldToBrowser() {
+    return new Promise((resolve) => {
+      if (typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => resolve());
+      } else {
+        window.setTimeout(resolve, 0);
+      }
+    });
+  }
+
+  async function encodeWav(audioBuffer, onProgress) {
+    const channelCount = Math.max(1, Math.min(AUDIO_RENDER_CHANNELS, audioBuffer.numberOfChannels || 1));
+    const length = audioBuffer.length;
+    const sampleRate = audioBuffer.sampleRate;
+    const bytesPerSample = 2;
+    const blockAlign = channelCount * bytesPerSample;
+    const dataSize = length * blockAlign;
+    const wav = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(wav);
+    const channels = [];
+
+    for (let channel = 0; channel < channelCount; channel++) {
+      channels.push(audioBuffer.getChannelData(Math.min(channel, audioBuffer.numberOfChannels - 1)));
+    }
+
+    writeAscii(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeAscii(view, 8, 'WAVE');
+    writeAscii(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, channelCount, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bytesPerSample * 8, true);
+    writeAscii(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    let offset = 44;
+    const chunkFrames = 16384;
+
+    for (let i = 0; i < length; i++) {
+      for (let channel = 0; channel < channelCount; channel++) {
+        const value = Number.isFinite(channels[channel][i]) ? channels[channel][i] : 0;
+        const sample = clamp(value, -1, 1);
+        const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+        view.setInt16(offset, intSample, true);
+        offset += bytesPerSample;
+      }
+
+      if (i > 0 && i % chunkFrames === 0) {
+        if (typeof onProgress === 'function') onProgress(i / length);
+        await yieldToBrowser();
+      }
+    }
+
+    if (typeof onProgress === 'function') onProgress(1);
+    return new Blob([view], { type: 'audio/wav' });
+  }
+
+  function basenameFromUrl(url) {
+    try {
+      const parsed = new URL(url, window.location.href);
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      return decodeURIComponent(parts[parts.length - 1] || '');
+    } catch (e) {
+      const clean = String(url || '').split(/[?#]/)[0];
+      const parts = clean.split('/').filter(Boolean);
+      try {
+        return decodeURIComponent(parts[parts.length - 1] || '');
+      } catch (e1) {
+        return parts[parts.length - 1] || '';
+      }
+    }
+  }
+
+  function titleFallbackName(el) {
+    const containers = [el.closest('.kml-player'), el.closest('article'), document];
+
+    for (const container of containers) {
+      if (!container) continue;
+      const title = container.querySelector('.kml-player-title, .entry-title, h1, h2');
+      if (title && title.textContent.trim()) return title.textContent.trim();
+    }
+
+    return '';
+  }
+
+  function audioDownloadFilename(url, el) {
+    const sourceName = basenameFromUrl(url) || titleFallbackName(el) || 'midi-render';
+    const baseName = sourceName
+      .replace(/^MIDI Player:\s*/i, '')
+      .replace(/\.(midi?|kar)$/i, '')
+      .replace(/[\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 180);
+
+    return (baseName || 'midi-render') + '.wav';
+  }
+
+  async function renderPianoAudio(renderNotes, renderDuration, renderTempoScale, renderVolumeScale) {
+    if (!window.Tone || typeof Tone.Offline !== 'function') {
+      throw new Error('Tone.js offline rendering is unavailable.');
+    }
+
+    const safeTempoScale = Math.max(0.05, renderTempoScale || 1);
+    const safeVolumeScale = Math.max(0, renderVolumeScale || 0);
+    const offlineDuration = Math.max(
+      0.25,
+      renderDuration / safeTempoScale + AUDIO_RENDER_TAIL_SECONDS
+    );
+
+    const renderedBuffer = await Tone.Offline(
+      async () => {
+        let sampler = null;
+
+        await new Promise((resolve, reject) => {
+          sampler = new Tone.Sampler({
+            attack: PIANO_NOTE_ATTACK,
+            baseUrl: PIANO_SAMPLE_BASE_URL,
+            curve: 'exponential',
+            onerror: reject,
+            onload: resolve,
+            release: PIANO_NOTE_RELEASE,
+            urls: buildToneSamplerUrls(),
+            volume: PIANO_OUTPUT_VOLUME_DB,
+          });
+
+          const filter = new Tone.Filter({
+            frequency: PIANO_LOWPASS_CUTOFF_HZ,
+            rolloff: -12,
+            type: 'lowpass',
+          });
+          const compressor = new Tone.Compressor({
+            attack: 0.03,
+            knee: 18,
+            ratio: 3,
+            release: 0.25,
+            threshold: -10,
+          });
+          const masterGain = new Tone.Gain(PIANO_MASTER_GAIN * safeVolumeScale);
+
+          sampler.chain(filter, compressor, masterGain);
+          masterGain.toDestination();
+        });
+
+        renderNotes.forEach((note) => {
+          if (!Number.isFinite(note.midi) || note.midi < 0 || note.midi > 127) return;
+
+          const start = note.time / safeTempoScale;
+          const duration = Math.max(0.03, (note.playbackDuration || note.duration || 0.03) / safeTempoScale);
+          if (start > offlineDuration) return;
+
+          sampler.triggerAttackRelease(
+            midiToToneNote(note.midi),
+            duration,
+            start,
+            toneVelocity(note)
+          );
+        });
+      },
+      offlineDuration,
+      AUDIO_RENDER_CHANNELS,
+      AUDIO_RENDER_SAMPLE_RATE
+    );
+
+    return audioBufferFromToneBuffer(renderedBuffer);
+  }
+
   function drawTimedRect(ctx, start, end, viewLeftTime, viewRightTime, pxPerSec, y, height, fillStyle) {
     if (end < viewLeftTime || start > viewRightTime) return;
 
@@ -369,6 +558,42 @@
 
     if (!canvas || !playBtn || !stopBtn || !tempo || !zoom || !timeEl) return;
 
+    const controls = el.querySelector('.kml-roll-controls');
+    const renderBtn = document.createElement('button');
+    const downloadAudio = document.createElement('a');
+    const renderStatus = document.createElement('span');
+    const renderProgress = document.createElement('div');
+    const renderProgressFill = document.createElement('span');
+
+    renderBtn.type = 'button';
+    renderBtn.className = 'kml-btn kml-render-audio';
+    renderBtn.textContent = 'Render WAV';
+    renderBtn.disabled = true;
+
+    downloadAudio.className = 'kml-btn kml-download-audio';
+    downloadAudio.hidden = true;
+    downloadAudio.rel = 'nofollow';
+    downloadAudio.textContent = 'Download WAV';
+    downloadAudio.download = audioDownloadFilename(url, el);
+
+    renderStatus.className = 'kml-render-status';
+    renderStatus.setAttribute('aria-live', 'polite');
+
+    renderProgress.className = 'kml-render-progress';
+    renderProgress.hidden = true;
+    renderProgress.setAttribute('role', 'progressbar');
+    renderProgress.setAttribute('aria-valuemin', '0');
+    renderProgress.setAttribute('aria-valuemax', '100');
+    renderProgress.setAttribute('aria-valuenow', '0');
+    renderProgress.appendChild(renderProgressFill);
+
+    if (controls) {
+      controls.insertBefore(renderBtn, timeEl);
+      controls.insertBefore(downloadAudio, timeEl);
+      controls.insertBefore(renderStatus, timeEl);
+      controls.insertBefore(renderProgress, timeEl);
+    }
+
     const ctx = canvas.getContext('2d');
 
     let midi = null;
@@ -390,10 +615,77 @@
     let activePiano = null;
     let scheduleTimer = null;
     let nextNoteIndex = 0;
+    let renderedAudioUrl = '';
+    let renderProgressTimer = null;
 
     function setStatus(msg) {
       // Keep this subtle; time text will overwrite during draw
       timeEl.textContent = msg;
+    }
+
+    function setRenderStatus(msg) {
+      renderStatus.textContent = msg || '';
+    }
+
+    function stopRenderProgressTimer() {
+      if (renderProgressTimer) {
+        window.clearInterval(renderProgressTimer);
+        renderProgressTimer = null;
+      }
+    }
+
+    function setRenderProgress(value, status) {
+      const pct = clamp(value, 0, 1);
+
+      renderProgress.hidden = false;
+      renderProgressFill.style.width = (pct * 100).toFixed(1) + '%';
+      renderProgress.setAttribute('aria-valuenow', String(Math.round(pct * 100)));
+      if (status !== undefined) setRenderStatus(status);
+    }
+
+    function hideRenderProgress() {
+      stopRenderProgressTimer();
+      renderProgress.hidden = true;
+      renderProgressFill.style.width = '0%';
+      renderProgress.setAttribute('aria-valuenow', '0');
+    }
+
+    function startEstimatedRenderProgress(start, end, estimatedSeconds, status) {
+      stopRenderProgressTimer();
+      setRenderProgress(start, status);
+
+      const startMs = performance.now();
+      const span = Math.max(0, end - start);
+      const estimateMs = Math.max(1200, estimatedSeconds * 1000);
+
+      renderProgressTimer = window.setInterval(() => {
+        const elapsed = performance.now() - startMs;
+        const eased = 1 - Math.exp(-elapsed / estimateMs);
+        const next = start + span * eased;
+        setRenderProgress(Math.min(end - 0.01, next), status);
+      }, 250);
+    }
+
+    function clearRenderedAudio(status) {
+      if (status === '') hideRenderProgress();
+
+      if (renderedAudioUrl) {
+        URL.revokeObjectURL(renderedAudioUrl);
+        renderedAudioUrl = '';
+      }
+
+      downloadAudio.hidden = true;
+      downloadAudio.removeAttribute('href');
+      if (status !== undefined) setRenderStatus(status);
+    }
+
+    function setRenderControlLock(locked) {
+      playBtn.disabled = locked || !midi;
+      stopBtn.disabled = locked || !midi;
+      tempo.disabled = locked || !midi;
+      zoom.disabled = locked || !midi;
+      if (volume) volume.disabled = locked || !midi;
+      renderBtn.disabled = locked || !midi || playbackNotes.length === 0;
     }
 
     function setTempoScale() {
@@ -722,6 +1014,7 @@
     // Debounce tempo changes so we do not restart 60 times/sec while dragging
     let tempoDebounce = null;
     tempo.addEventListener('input', () => {
+      clearRenderedAudio('');
       setTempoScale();
       if (!isPlaying) return;
 
@@ -746,7 +1039,65 @@
     });
 
     zoom.addEventListener('input', () => setZoom());
-    if (volume) volume.addEventListener('input', () => setVolume());
+    if (volume) {
+      volume.addEventListener('input', () => {
+        clearRenderedAudio('');
+        setVolume();
+      });
+    }
+
+    renderBtn.addEventListener('click', async () => {
+      if (!midi || !playbackNotes.length) return;
+
+      try {
+        if (isPlaying) {
+          pause();
+          playBtn.textContent = 'Play';
+        }
+
+        clearRenderedAudio('Preparing WAV...');
+        setTempoScale();
+        setVolume();
+
+        setRenderControlLock(true);
+        renderBtn.textContent = 'Rendering...';
+        setRenderProgress(0.03, 'Preparing WAV...');
+        await yieldToBrowser();
+
+        startEstimatedRenderProgress(
+          0.08,
+          0.82,
+          Math.max(4, (durTotal / Math.max(tempoScale, 0.05)) * 0.12),
+          'Rendering WAV...'
+        );
+
+        const audioBuffer = await renderPianoAudio(playbackNotes, durTotal, tempoScale, volumeScale);
+        stopRenderProgressTimer();
+        setRenderProgress(0.84, 'Encoding WAV...');
+        await yieldToBrowser();
+
+        const wav = await encodeWav(audioBuffer, (progress) => {
+          setRenderProgress(0.84 + progress * 0.15, 'Encoding WAV...');
+        });
+
+        renderedAudioUrl = URL.createObjectURL(wav);
+        downloadAudio.href = renderedAudioUrl;
+        downloadAudio.download = audioDownloadFilename(url, el);
+        downloadAudio.hidden = false;
+        setRenderProgress(1, 'WAV ready');
+        setRenderStatus('WAV ready');
+      } catch (e) {
+        console.error('KML audio render failed:', e);
+        stopRenderProgressTimer();
+        hideRenderProgress();
+        clearRenderedAudio('Render failed');
+      } finally {
+        setRenderControlLock(false);
+        renderBtn.textContent = 'Render WAV';
+      }
+    });
+
+    window.addEventListener('pagehide', () => clearRenderedAudio(''));
 
     // ---- Load MIDI and start drawing ----
     (async () => {
@@ -769,6 +1120,7 @@
 
         playBtn.disabled = false;
         playBtn.textContent = 'Play';
+        renderBtn.disabled = playbackNotes.length === 0;
 
         warmPianoSoon();
 

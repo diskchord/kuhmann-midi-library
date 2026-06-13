@@ -189,6 +189,13 @@
 	padding: 8px 12px;
 	color: #000;
 	cursor: pointer;
+	text-decoration: none;
+	line-height: 1.2;
+}
+
+.kml-btn[disabled] {
+	cursor: default;
+	opacity: 0.55;
 }
 
 .kml-label {
@@ -208,6 +215,38 @@
 	font-variant-numeric: tabular-nums;
 	font-size: 13px;
 	opacity: 0.85;
+}
+
+.kml-download-audio[hidden] {
+	display: none;
+}
+
+.kml-render-status {
+	min-width: 72px;
+	font-size: 13px;
+	opacity: 0.72;
+}
+
+.kml-render-progress {
+	position: relative;
+	flex: 0 1 160px;
+	height: 8px;
+	overflow: hidden;
+	border-radius: 999px;
+	background: rgba(0,0,0,0.08);
+}
+
+.kml-render-progress[hidden] {
+	display: none;
+}
+
+.kml-render-progress span {
+	display: block;
+	width: 0%;
+	height: 100%;
+	border-radius: inherit;
+	background: #42a7d8;
+	transition: width 160ms ease-out;
 }
 
 .kml-canvas {
@@ -288,5 +327,9 @@
 	.kml-upload-picker,
 	.kml-player-upload .kml-btn {
 		width: 100%;
+	}
+
+	.kml-render-progress {
+		flex-basis: 100%;
 	}
 }
