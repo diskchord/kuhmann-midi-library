@@ -51,13 +51,21 @@ wp_enqueue_script(
 	true
 );
 
+wp_enqueue_script(
+	'soundfont-player',
+	'https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js',
+	array(),
+	'0.12.0',
+	true
+);
+
 $pianoroll_path = KML_PLUGIN_DIR . 'public/assets/kml-pianoroll.js';
 $pianoroll_ver  = file_exists( $pianoroll_path ) ? (string) filemtime( $pianoroll_path ) : KML_VERSION;
 
 wp_enqueue_script(
 	'kml-pianoroll',
 	plugins_url( 'public/assets/kml-pianoroll.js', KML_PLUGIN_FILE ),
-	array( 'tonejs', 'tonejs-midi' ),
+	array( 'tonejs', 'tonejs-midi', 'soundfont-player' ),
 	$pianoroll_ver,
 	true
 );

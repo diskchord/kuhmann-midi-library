@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Kuhmann MIDI Library
  * Description: Index and display a large MIDI directory as an SEO-friendly, navigable library (custom post type + folder taxonomy).
- * Version: 0.1.10
+ * Version: 0.1.11
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: alexanderpeppe.com
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'KML_VERSION', '0.1.10' );
+define( 'KML_VERSION', '0.1.11' );
 define( 'KML_PLUGIN_FILE', __FILE__ );
 define( 'KML_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'KML_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

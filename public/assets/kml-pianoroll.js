@@ -1,4 +1,4 @@
-/* global Midi, Tone */
+/* global Midi, Tone, Soundfont */
 (function () {
   'use strict';
 
@@ -17,6 +17,12 @@
   const PIANO_LOWPASS_CUTOFF_HZ = 12000;
   const PIANO_SAMPLE_BASE_URL = 'https://tambien.github.io/Piano/audio/';
   const PIANO_SAMPLE_VELOCITY = 8;
+  const SOUNDFONT_MASTER_GAIN = 0.82;
+  const SOUNDFONT_NAME = 'FluidR3_GM';
+  const SOUNDFONT_FORMAT = 'mp3';
+  const SOUNDFONT_FALLBACK_INSTRUMENT = 'acoustic_grand_piano';
+  const DRUM_CHANNEL = 9;
+  const PIANO_PROGRAM_MAX = 7;
   const AUDIO_RENDER_CHANNELS = 2;
   const AUDIO_RENDER_SAMPLE_RATE = 44100;
   const AUDIO_RENDER_TAIL_SECONDS = 1.2;
@@ -31,9 +37,161 @@
     { cc: 66, label: 'Sostenuto' },
     { cc: SUSTAIN_CC, label: 'Sustain' },
   ];
+  const CHANNEL_COLORS = [
+    '#2563eb',
+    '#dc2626',
+    '#16a34a',
+    '#9333ea',
+    '#ea580c',
+    '#0891b2',
+    '#be123c',
+    '#65a30d',
+    '#7c3aed',
+    '#b45309',
+    '#0f766e',
+    '#c026d3',
+    '#4b5563',
+    '#f59e0b',
+    '#0284c7',
+    '#84cc16',
+  ];
+  const GM_SOUNDFONT_INSTRUMENTS = [
+    'acoustic_grand_piano',
+    'bright_acoustic_piano',
+    'electric_grand_piano',
+    'honkytonk_piano',
+    'electric_piano_1',
+    'electric_piano_2',
+    'harpsichord',
+    'clavinet',
+    'celesta',
+    'glockenspiel',
+    'music_box',
+    'vibraphone',
+    'marimba',
+    'xylophone',
+    'tubular_bells',
+    'dulcimer',
+    'drawbar_organ',
+    'percussive_organ',
+    'rock_organ',
+    'church_organ',
+    'reed_organ',
+    'accordion',
+    'harmonica',
+    'tango_accordion',
+    'acoustic_guitar_nylon',
+    'acoustic_guitar_steel',
+    'electric_guitar_jazz',
+    'electric_guitar_clean',
+    'electric_guitar_muted',
+    'overdriven_guitar',
+    'distortion_guitar',
+    'guitar_harmonics',
+    'acoustic_bass',
+    'electric_bass_finger',
+    'electric_bass_pick',
+    'fretless_bass',
+    'slap_bass_1',
+    'slap_bass_2',
+    'synth_bass_1',
+    'synth_bass_2',
+    'violin',
+    'viola',
+    'cello',
+    'contrabass',
+    'tremolo_strings',
+    'pizzicato_strings',
+    'orchestral_harp',
+    'timpani',
+    'string_ensemble_1',
+    'string_ensemble_2',
+    'synth_strings_1',
+    'synth_strings_2',
+    'choir_aahs',
+    'voice_oohs',
+    'synth_choir',
+    'orchestra_hit',
+    'trumpet',
+    'trombone',
+    'tuba',
+    'muted_trumpet',
+    'french_horn',
+    'brass_section',
+    'synth_brass_1',
+    'synth_brass_2',
+    'soprano_sax',
+    'alto_sax',
+    'tenor_sax',
+    'baritone_sax',
+    'oboe',
+    'english_horn',
+    'bassoon',
+    'clarinet',
+    'piccolo',
+    'flute',
+    'recorder',
+    'pan_flute',
+    'blown_bottle',
+    'shakuhachi',
+    'whistle',
+    'ocarina',
+    'lead_1_square',
+    'lead_2_sawtooth',
+    'lead_3_calliope',
+    'lead_4_chiff',
+    'lead_5_charang',
+    'lead_6_voice',
+    'lead_7_fifths',
+    'lead_8_bass__lead',
+    'pad_1_new_age',
+    'pad_2_warm',
+    'pad_3_polysynth',
+    'pad_4_choir',
+    'pad_5_bowed',
+    'pad_6_metallic',
+    'pad_7_halo',
+    'pad_8_sweep',
+    'fx_1_rain',
+    'fx_2_soundtrack',
+    'fx_3_crystal',
+    'fx_4_atmosphere',
+    'fx_5_brightness',
+    'fx_6_goblins',
+    'fx_7_echoes',
+    'fx_8_scifi',
+    'sitar',
+    'banjo',
+    'shamisen',
+    'koto',
+    'kalimba',
+    'bagpipe',
+    'fiddle',
+    'shanai',
+    'tinkle_bell',
+    'agogo',
+    'steel_drums',
+    'woodblock',
+    'taiko_drum',
+    'melodic_tom',
+    'synth_drum',
+    'reverse_cymbal',
+    'guitar_fret_noise',
+    'breath_noise',
+    'seashore',
+    'bird_tweet',
+    'telephone_ring',
+    'helicopter',
+    'applause',
+    'gunshot',
+  ];
 
   let tonePiano = null;
   let tonePianoPromise = null;
+  let soundfontContext = null;
+  let soundfontMasterGain = null;
+  const soundfontPlayers = new Map();
+  const soundfontPromises = new Map();
 
   function midiToSampleNote(midi) {
     const names = ['C', 'Cs', 'D', 'Ds', 'E', 'F', 'Fs', 'G', 'Gs', 'A', 'As', 'B'];
@@ -140,6 +298,49 @@
     return m + ':' + String(s).padStart(2, '0');
   }
 
+  function titleCaseInstrumentName(name) {
+    return String(name || 'Instrument')
+      .replace(/__/g, ' + ')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+
+  function soundfontNameForProgram(program, percussion) {
+    if (percussion) return 'synth_drum';
+
+    const index = clamp(Math.round(Number(program) || 0), 0, GM_SOUNDFONT_INSTRUMENTS.length - 1);
+    return GM_SOUNDFONT_INSTRUMENTS[index] || GM_SOUNDFONT_INSTRUMENTS[0];
+  }
+
+  function channelColor(channel) {
+    const index = clamp(Math.round(Number(channel) || 0), 0, CHANNEL_COLORS.length - 1);
+    return CHANNEL_COLORS[index] || CHANNEL_COLORS[0];
+  }
+
+  function hexToRgba(hex, alpha) {
+    const clean = String(hex || '').replace('#', '');
+    const value = /^[0-9a-f]{6}$/i.test(clean) ? clean : '2563eb';
+    const r = parseInt(value.slice(0, 2), 16);
+    const g = parseInt(value.slice(2, 4), 16);
+    const b = parseInt(value.slice(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
+
+  function safeTrackChannel(track) {
+    if (track && Number.isFinite(track.channel)) {
+      return clamp(Math.round(track.channel), 0, 15);
+    }
+    return 0;
+  }
+
+  function safeTrackProgram(track) {
+    const instrument = track && track.instrument;
+    if (instrument && Number.isFinite(instrument.number)) {
+      return clamp(Math.round(instrument.number), 0, 127);
+    }
+    return 0;
+  }
+
   async function loadArrayBuffer(url) {
     const r = await fetch(url);
     if (!r.ok) throw new Error('Fetch failed: ' + r.status);
@@ -160,21 +361,94 @@
   }
 
   function collectNotes(midi) {
-    // Flatten notes across tracks.
-    // Each note: time (s), duration (s), midi pitch, velocity (0-1)
     const notes = [];
-    midi.tracks.forEach((t) => {
+    midi.tracks.forEach((t, trackIndex) => {
+      const channel = safeTrackChannel(t);
+      const program = safeTrackProgram(t);
+      const percussion = !!(t && t.instrument && t.instrument.percussion) || channel === DRUM_CHANNEL;
+      const soundfontName = soundfontNameForProgram(program, percussion);
+      const instrumentLabel = percussion ? 'Percussion' : titleCaseInstrumentName(soundfontName);
+      const trackName = t && t.name ? String(t.name) : '';
+
       t.notes.forEach((n) =>
         notes.push({
+          channel,
+          channelColor: channelColor(channel),
           time: n.time,
           duration: n.duration,
+          instrumentLabel,
           midi: n.midi,
+          partKey: channel + ':' + program + ':' + soundfontName,
+          percussion,
+          program,
+          soundfontName,
+          trackIndex,
+          trackName,
           velocity: n.velocity,
         })
       );
     });
-    notes.sort((a, b) => a.time - b.time);
+    notes.sort((a, b) => a.time - b.time || a.channel - b.channel || a.midi - b.midi);
     return notes;
+  }
+
+  function collectChannelMetas(notes) {
+    const channels = new Map();
+
+    notes.forEach((note) => {
+      const channel = Number.isFinite(note.channel) ? note.channel : 0;
+      if (!channels.has(channel)) {
+        channels.set(channel, {
+          channel,
+          color: channelColor(channel),
+          instruments: [],
+          instrumentKeys: new Set(),
+          noteCount: 0,
+          trackNames: [],
+          trackNameKeys: new Set(),
+        });
+      }
+
+      const meta = channels.get(channel);
+      const instrumentKey = note.percussion ? 'percussion' : String(note.program) + ':' + note.soundfontName;
+      meta.noteCount++;
+
+      if (!meta.instrumentKeys.has(instrumentKey)) {
+        meta.instrumentKeys.add(instrumentKey);
+        meta.instruments.push({
+          label: note.instrumentLabel,
+          percussion: note.percussion,
+          program: note.program,
+          soundfontName: note.soundfontName,
+        });
+      }
+
+      if (note.trackName && !meta.trackNameKeys.has(note.trackName)) {
+        meta.trackNameKeys.add(note.trackName);
+        meta.trackNames.push(note.trackName);
+      }
+    });
+
+    return Array.from(channels.values()).sort((a, b) => a.channel - b.channel);
+  }
+
+  function activeChannelCount(channelMetas) {
+    return channelMetas.filter((meta) => meta.noteCount > 0).length;
+  }
+
+  function isPianoFamilyInstrument(instrument) {
+    return (
+      instrument &&
+      !instrument.percussion &&
+      Number.isFinite(instrument.program) &&
+      instrument.program <= PIANO_PROGRAM_MAX
+    );
+  }
+
+  function allActiveChannelsArePiano(channelMetas) {
+    return channelMetas
+      .filter((meta) => meta.noteCount > 0)
+      .every((meta) => meta.instruments.length > 0 && meta.instruments.every(isPianoFamilyInstrument));
   }
 
   function noteEndTime(notes, durationKey) {
@@ -202,7 +476,12 @@
           }))
           .sort((a, b) => a.time - b.time);
 
-        if (events.length) tracks.push(events);
+        if (events.length) {
+          tracks.push({
+            channel: safeTrackChannel(t),
+            events,
+          });
+        }
       });
 
       return Object.assign({}, lane, { tracks });
@@ -213,8 +492,8 @@
     let end = 0;
 
     pedalEvents.forEach((lane) => {
-      lane.tracks.forEach((events) => {
-        events.forEach((event) => {
+      lane.tracks.forEach((track) => {
+        track.events.forEach((event) => {
           end = Math.max(end, event.time);
         });
       });
@@ -250,7 +529,8 @@
     return pedalEvents.map((lane) => {
       const segments = [];
 
-      lane.tracks.forEach((events) => {
+      lane.tracks.forEach((track) => {
+        const events = track.events;
         let activeStart = null;
 
         events.forEach((event) => {
@@ -284,6 +564,58 @@
     });
   }
 
+  function segmentsFromPedalEvents(eventTracks, duration) {
+    const segments = [];
+
+    eventTracks.forEach((events) => {
+      let activeStart = null;
+
+      events.forEach((event) => {
+        const time = clamp(event.time, 0, duration);
+        const isPressed = event.value >= PEDAL_ON_THRESHOLD;
+
+        if (isPressed && activeStart === null) {
+          activeStart = time;
+        } else if (!isPressed && activeStart !== null) {
+          if (time > activeStart) {
+            segments.push({
+              time: activeStart,
+              duration: time - activeStart,
+            });
+          }
+          activeStart = null;
+        }
+      });
+
+      if (activeStart !== null && duration > activeStart) {
+        segments.push({
+          time: activeStart,
+          duration: duration - activeStart,
+        });
+      }
+    });
+
+    return mergeSegments(segments);
+  }
+
+  function buildPedalSegmentsByChannel(pedalEvents, cc, duration) {
+    const lane = pedalEvents.find((item) => item.cc === cc);
+    const segmentsByChannel = new Map();
+
+    if (!lane) return segmentsByChannel;
+
+    lane.tracks.forEach((track) => {
+      if (!segmentsByChannel.has(track.channel)) segmentsByChannel.set(track.channel, []);
+      segmentsByChannel.get(track.channel).push(track.events);
+    });
+
+    segmentsByChannel.forEach((eventTracks, channel) => {
+      segmentsByChannel.set(channel, segmentsFromPedalEvents(eventTracks, duration));
+    });
+
+    return segmentsByChannel;
+  }
+
   function isBlackKey(midi) {
     const pitchClass = midi % 12;
     return (
@@ -293,11 +625,6 @@
       pitchClass === 8 ||
       pitchClass === 10
     );
-  }
-
-  function getPedalSegments(pedalLanes, cc) {
-    const lane = pedalLanes.find((item) => item.cc === cc);
-    return lane ? lane.segments : [];
   }
 
   function segmentEnd(segment) {
@@ -314,15 +641,17 @@
     return noteEnd;
   }
 
-  function buildPlaybackNotes(notes, sustainSegments) {
+  function buildPlaybackNotes(notes, sustainSegmentsByChannel) {
     const nextStartByPitch = new Map();
     const playbackNotes = new Array(notes.length);
 
     for (let i = notes.length - 1; i >= 0; i--) {
       const n = notes[i];
       const noteEnd = n.time + n.duration;
+      const sustainSegments = sustainSegmentsByChannel.get(n.channel) || [];
       const sustainedEnd = sustainedEndForNote(noteEnd, sustainSegments);
-      const nextStart = nextStartByPitch.get(n.midi);
+      const pitchKey = n.partKey + ':' + n.midi;
+      const nextStart = nextStartByPitch.get(pitchKey);
       let playbackEnd = sustainedEnd;
 
       if (Number.isFinite(nextStart) && nextStart > n.time) {
@@ -333,7 +662,7 @@
         playbackDuration: Math.max(0.02, playbackEnd - n.time),
       });
 
-      nextStartByPitch.set(n.midi, n.time);
+      nextStartByPitch.set(pitchKey, n.time);
     }
 
     return playbackNotes;
@@ -341,6 +670,163 @@
 
   function toneVelocity(note) {
     return typeof note.velocity === 'number' ? clamp(note.velocity, 0, 1) : 0.8;
+  }
+
+  function canUseSoundfont() {
+    return !!(
+      window.Soundfont &&
+      typeof Soundfont.instrument === 'function' &&
+      (window.AudioContext || window.webkitAudioContext)
+    );
+  }
+
+  function ensureSoundfontContext() {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+
+    if (!AudioContextCtor) {
+      throw new Error('WebAudio is unavailable.');
+    }
+
+    if (!soundfontContext) {
+      soundfontContext = new AudioContextCtor();
+      soundfontMasterGain = soundfontContext.createGain();
+      soundfontMasterGain.gain.value = SOUNDFONT_MASTER_GAIN;
+      soundfontMasterGain.connect(soundfontContext.destination);
+    }
+
+    return soundfontContext;
+  }
+
+  function setSoundfontVolume(scale) {
+    if (!soundfontMasterGain || !soundfontMasterGain.gain) return;
+
+    const target = SOUNDFONT_MASTER_GAIN * Math.max(0, scale || 0);
+    const gain = soundfontMasterGain.gain;
+    const now = soundfontContext ? soundfontContext.currentTime : 0;
+
+    try {
+      if (typeof gain.cancelScheduledValues === 'function') gain.cancelScheduledValues(now);
+      if (typeof gain.setTargetAtTime === 'function') {
+        gain.setTargetAtTime(target, now, 0.02);
+      } else {
+        gain.value = target;
+      }
+    } catch (e) {
+      try {
+        gain.value = target;
+      } catch (e1) {}
+    }
+  }
+
+  function uniqueSoundfontRequests(playbackNotes) {
+    const requests = new Map();
+
+    playbackNotes.forEach((note) => {
+      const name = note.soundfontName || GM_SOUNDFONT_INSTRUMENTS[0];
+      if (!requests.has(name)) {
+        requests.set(name, {
+          name,
+          notes: new Set(),
+        });
+      }
+      requests.get(name).notes.add(midiToToneNote(clamp(Math.round(note.midi), 0, 127)));
+    });
+
+    return Array.from(requests.values()).map((request) => ({
+      name: request.name,
+      notes: Array.from(request.notes.values()).sort(),
+    }));
+  }
+
+  async function ensureSoundfontPlayer(request) {
+    const name = request.name || GM_SOUNDFONT_INSTRUMENTS[0];
+    const key = name + ':' + request.notes.join(',');
+    if (soundfontPlayers.has(key)) {
+      return {
+        name,
+        player: soundfontPlayers.get(key),
+      };
+    }
+    if (soundfontPromises.has(key)) {
+      return {
+        name,
+        player: await soundfontPromises.get(key),
+      };
+    }
+
+    const ac = ensureSoundfontContext();
+    const loadInstrument = (instrumentName) =>
+      Soundfont.instrument(ac, instrumentName, {
+        destination: soundfontMasterGain,
+        format: SOUNDFONT_FORMAT,
+        notes: request.notes,
+        soundfont: SOUNDFONT_NAME,
+      });
+
+    const promise = loadInstrument(name)
+      .catch((error) => {
+        if (name === SOUNDFONT_FALLBACK_INSTRUMENT) throw error;
+
+        console.warn(
+          'KML soundfont failed to load ' +
+            name +
+            '; using ' +
+            SOUNDFONT_FALLBACK_INSTRUMENT +
+            ' instead.',
+          error
+        );
+
+        return loadInstrument(SOUNDFONT_FALLBACK_INSTRUMENT);
+      })
+      .then((player) => {
+        soundfontPlayers.set(key, player);
+        soundfontPromises.delete(key);
+        return player;
+      })
+      .catch((error) => {
+        soundfontPromises.delete(key);
+        throw error;
+      });
+
+    soundfontPromises.set(key, promise);
+    return {
+      name,
+      player: await promise,
+    };
+  }
+
+  async function ensureSoundfontPlayback(playbackNotes) {
+    if (!canUseSoundfont()) {
+      throw new Error('Soundfont player was not loaded.');
+    }
+
+    const ac = ensureSoundfontContext();
+
+    if (ac.state === 'suspended' && typeof ac.resume === 'function') {
+      await ac.resume();
+    }
+
+    const loadedPlayers = await Promise.all(uniqueSoundfontRequests(playbackNotes).map(ensureSoundfontPlayer));
+    const playersByName = new Map();
+
+    loadedPlayers.forEach((loaded) => {
+      playersByName.set(loaded.name, loaded.player);
+    });
+
+    return {
+      context: ac,
+      players: playersByName,
+    };
+  }
+
+  function stopSoundfontPlayback(state, when) {
+    if (!state || !state.players) return;
+
+    state.players.forEach((player) => {
+      try {
+        if (player && typeof player.stop === 'function') player.stop(when);
+      } catch (e) {}
+    });
   }
 
   function audioBufferFromToneBuffer(buffer) {
@@ -624,12 +1110,17 @@
 
     if (!canvas || !playBtn || !stopBtn || !tempo || !zoom || !timeEl) return;
 
+    const channelKey = document.createElement('div');
     const renderControls = document.createElement('div');
     const renderBtn = document.createElement('button');
     const downloadAudio = document.createElement('a');
     const renderStatus = document.createElement('span');
     const renderProgress = document.createElement('div');
     const renderProgressFill = document.createElement('span');
+
+    channelKey.className = 'kml-channel-key';
+    channelKey.hidden = true;
+    channelKey.setAttribute('aria-label', 'Channel key');
 
     renderControls.className = 'kml-render-controls';
 
@@ -659,6 +1150,7 @@
     renderControls.appendChild(downloadAudio);
     renderControls.appendChild(renderStatus);
     renderControls.appendChild(renderProgress);
+    canvas.insertAdjacentElement('beforebegin', channelKey);
     canvas.insertAdjacentElement('afterend', renderControls);
 
     const ctx = canvas.getContext('2d');
@@ -666,8 +1158,10 @@
     let midi = null;
     let notes = [];
     let playbackNotes = [];
+    let channelMetas = [];
     let pedalLanes = PEDAL_LANES.map((lane) => Object.assign({}, lane, { segments: [] }));
     let durTotal = 0;
+    let audioMode = 'piano';
     const range = { lo: PIANO_LOW_MIDI, hi: PIANO_HIGH_MIDI };
 
     // Visual params
@@ -685,6 +1179,8 @@
     let renderedAudioUrl = '';
     let renderProgressTimer = null;
     let activeRender = null;
+    let activeSoundfont = null;
+    const mutedChannels = new Set();
 
     function setStatus(msg) {
       // Keep this subtle; time text will overwrite during draw
@@ -693,6 +1189,80 @@
 
     function setRenderStatus(msg) {
       renderStatus.textContent = msg || '';
+    }
+
+    function instrumentSummary(meta) {
+      const labels = meta.instruments.map((instrument) => instrument.label);
+      if (!labels.length) return 'Instrument';
+      if (labels.length <= 2) return labels.join(', ');
+      return labels.slice(0, 2).join(', ') + ' +' + (labels.length - 2);
+    }
+
+    function isChannelMuted(channel) {
+      return mutedChannels.has(channel);
+    }
+
+    function activePlaybackNotes() {
+      return playbackNotes.filter((note) => !isChannelMuted(note.channel));
+    }
+
+    function refreshRenderAvailability() {
+      renderBtn.disabled = activeRender ? false : !canRenderAudio();
+      if (audioMode === 'soundfont' && playbackNotes.length) {
+        setRenderStatus('WAV render unavailable for multichannel playback');
+      } else if (audioMode === 'piano') {
+        setRenderStatus('');
+      }
+    }
+
+    function updateChannelKey() {
+      channelKey.textContent = '';
+      channelKey.hidden = channelMetas.length === 0;
+
+      channelMetas.forEach((meta) => {
+        const item = document.createElement('button');
+        const swatch = document.createElement('span');
+        const label = document.createElement('span');
+        const trackNames = meta.trackNames.slice(0, 2).join(', ');
+        const suffix = trackNames ? ' - ' + trackNames : '';
+        const muted = isChannelMuted(meta.channel);
+
+        item.type = 'button';
+        item.className = 'kml-channel-key-item' + (muted ? ' is-muted' : '');
+        item.setAttribute('aria-pressed', muted ? 'true' : 'false');
+        swatch.className = 'kml-channel-swatch';
+        swatch.style.backgroundColor = meta.color;
+        label.className = 'kml-channel-key-label';
+        label.textContent =
+          'Ch ' +
+          (meta.channel + 1) +
+          ' - ' +
+          instrumentSummary(meta) +
+          ' - ' +
+          meta.noteCount +
+          ' notes' +
+          suffix;
+        label.title = label.textContent;
+        item.setAttribute(
+          'aria-label',
+          (muted ? 'Unmute ' : 'Mute ') + 'channel ' + (meta.channel + 1)
+        );
+        item.title = muted ? 'Unmute channel' : 'Mute channel';
+        item.addEventListener('click', () => toggleChannelMute(meta.channel));
+
+        item.appendChild(swatch);
+        item.appendChild(label);
+        channelKey.appendChild(item);
+      });
+    }
+
+    function chooseAudioMode() {
+      if (activeChannelCount(channelMetas) <= 1) return 'piano';
+      if (allActiveChannelsArePiano(channelMetas)) return 'piano';
+      if (canUseSoundfont()) return 'soundfont';
+
+      console.warn('KML soundfont player is unavailable; using piano playback for multichannel MIDI.');
+      return 'piano';
     }
 
     function stopRenderProgressTimer() {
@@ -748,7 +1318,7 @@
     }
 
     function canRenderAudio() {
-      return !!midi && playbackNotes.length > 0;
+      return !!midi && activePlaybackNotes().length > 0 && audioMode === 'piano';
     }
 
     function setRenderControlLock(locked) {
@@ -757,7 +1327,10 @@
       tempo.disabled = locked || !midi;
       zoom.disabled = locked || !midi;
       if (volume) volume.disabled = locked || !midi;
-      renderBtn.disabled = !canRenderAudio();
+      channelKey.querySelectorAll('.kml-channel-key-item').forEach((button) => {
+        button.disabled = locked || !midi;
+      });
+      renderBtn.disabled = activeRender ? false : !canRenderAudio();
     }
 
     function setRenderButtonMode(mode) {
@@ -833,17 +1406,22 @@
       }
     }
 
+    function applyPlaybackVolume() {
+      applyPianoVolume();
+      setSoundfontVolume(volumeScale);
+    }
+
     function setVolume() {
       if (!volume) {
         volumeScale = PIANO_VOLUME_DEFAULT / 100;
-        applyPianoVolume();
+        applyPlaybackVolume();
         return;
       }
 
       const pct = clamp(Number(volume.value || PIANO_VOLUME_DEFAULT), 0, 200);
       volumeScale = pct / 100;
       if (volumeVal) volumeVal.textContent = Math.round(pct) + '%';
-      applyPianoVolume();
+      applyPlaybackVolume();
     }
 
     function currentT() {
@@ -870,6 +1448,38 @@
           activePiano.sampler.releaseAll(Tone.now());
         }
       } catch (e) {}
+
+      try {
+        if (activeSoundfont && activeSoundfont.context) {
+          stopSoundfontPlayback(activeSoundfont, activeSoundfont.context.currentTime);
+        }
+      } catch (e) {}
+    }
+
+    function restartPlaybackAtCurrentTime() {
+      if (!isPlaying) return;
+
+      startAt = currentT();
+      cancelScheduled();
+      startPerf = performance.now();
+      resetScheduleIndex();
+      schedulePlaybackWindow();
+      scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+    }
+
+    function toggleChannelMute(channel) {
+      if (activeRender) return;
+
+      if (mutedChannels.has(channel)) {
+        mutedChannels.delete(channel);
+      } else {
+        mutedChannels.add(channel);
+      }
+
+      updateChannelKey();
+      clearRenderedAudio('');
+      refreshRenderAvailability();
+      restartPlaybackAtCurrentTime();
     }
 
     function resetScheduleIndex() {
@@ -899,18 +1509,51 @@
       activePiano.sampler.triggerRelease(noteName, releaseAt);
     }
 
-    function scheduleToneWindow() {
-      if (!isPlaying || !activePiano) return;
+    function scheduleSoundfontNote(n, tNow, audioNow) {
+      if (!activeSoundfont || !activeSoundfont.players) return;
+      if (!Number.isFinite(n.midi) || n.midi < 0 || n.midi > 127) return;
+
+      const player = activeSoundfont.players.get(n.soundfontName);
+      if (!player || typeof player.play !== 'function') return;
+
+      const end = n.time + n.playbackDuration;
+      const struckEnd = n.time + n.duration;
+      if (end <= tNow || struckEnd <= tNow) return;
+
+      const audibleStart = Math.max(n.time, tNow);
+      const when = audioNow + Math.max(0, (audibleStart - tNow) / tempoScale);
+      const duration = Math.max(0.03, (end - audibleStart) / tempoScale);
+
+      player.play(midiToToneNote(clamp(Math.round(n.midi), 0, 127)), when, {
+        gain: toneVelocity(n),
+        duration,
+      });
+    }
+
+    function schedulePlaybackWindow() {
+      if (!isPlaying) return;
+      if (audioMode === 'soundfont' && !activeSoundfont) return;
+      if (audioMode !== 'soundfont' && !activePiano) return;
 
       const tNow = currentT();
-      const toneNow = Tone.now();
+      const audioNow =
+        audioMode === 'soundfont' && activeSoundfont.context
+          ? activeSoundfont.context.currentTime
+          : Tone.now();
       const windowEnd = Math.min(durTotal, tNow + NOTE_SCHEDULE_LOOKAHEAD * tempoScale);
 
       while (nextNoteIndex < playbackNotes.length) {
         const n = playbackNotes[nextNoteIndex];
         if (n.time > windowEnd) break;
 
-        scheduleToneNote(n, tNow, toneNow);
+        if (isChannelMuted(n.channel)) {
+          nextNoteIndex++;
+          continue;
+        } else if (audioMode === 'soundfont') {
+          scheduleSoundfontNote(n, tNow, audioNow);
+        } else {
+          scheduleToneNote(n, tNow, audioNow);
+        }
         nextNoteIndex++;
       }
     }
@@ -920,19 +1563,36 @@
 
       setTempoScale();
 
-      setStatus('Loading piano...');
-      const piano = await ensureTonePiano({ resumeCtx: true });
+      let piano = null;
+      let soundfont = null;
+
+      if (audioMode === 'soundfont') {
+        try {
+          setStatus('Loading instruments...');
+          soundfont = await ensureSoundfontPlayback(playbackNotes);
+        } catch (error) {
+          console.warn('KML soundfont playback failed; falling back to piano playback.', error);
+          audioMode = 'piano';
+          refreshRenderAvailability();
+          setStatus('Loading piano...');
+          piano = await ensureTonePiano({ resumeCtx: true });
+        }
+      } else {
+        setStatus('Loading piano...');
+        piano = await ensureTonePiano({ resumeCtx: true });
+      }
 
       // Cancel anything from a prior run/pause
       cancelScheduled();
 
       activePiano = piano;
-      applyPianoVolume();
+      activeSoundfont = soundfont;
+      applyPlaybackVolume();
       isPlaying = true;
       startPerf = performance.now();
       resetScheduleIndex();
-      scheduleToneWindow();
-      scheduleTimer = window.setInterval(scheduleToneWindow, NOTE_SCHEDULE_INTERVAL_MS);
+      schedulePlaybackWindow();
+      scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
     }
 
     function pause() {
@@ -1016,7 +1676,8 @@
         const y = (pitchHi - n.midi) * laneH;
         const nh = Math.max(1, laneH * 0.85);
 
-        const a = 0.25 + 0.70 * clamp(n.velocity || 0.5, 0, 1);
+        const muted = isChannelMuted(n.channel);
+        const a = (0.25 + 0.70 * clamp(n.velocity || 0.5, 0, 1)) * (muted ? 0.18 : 1);
         drawTimedRect(
           ctx,
           nStart,
@@ -1026,7 +1687,7 @@
           pxPerSec,
           y + laneH * 0.08,
           nh,
-          'rgba(20,40,55,' + a.toFixed(3) + ')'
+          hexToRgba(n.channelColor, a.toFixed(3))
         );
       }
 
@@ -1167,7 +1828,7 @@
         return;
       }
 
-      if (!midi || !playbackNotes.length) return;
+      if (!midi || !activePlaybackNotes().length) return;
 
       const renderState = createRenderState();
       activeRender = renderState;
@@ -1196,7 +1857,7 @@
         );
 
         const audioBuffer = await renderPianoAudio(
-          playbackNotes,
+          activePlaybackNotes(),
           durTotal,
           tempoScale,
           volumeScale,
@@ -1258,18 +1919,27 @@
         const buf = await loadArrayBuffer(url);
         midi = new Midi(buf);
         notes = collectNotes(midi);
+        channelMetas = collectChannelMetas(notes);
+        updateChannelKey();
+        audioMode = chooseAudioMode();
+
         const pedalEvents = collectPedalEvents(midi);
+        const sustainSegmentsByChannel = buildPedalSegmentsByChannel(
+          pedalEvents,
+          SUSTAIN_CC,
+          Math.max(midi.duration || 0, noteEndTime(notes), lastPedalEventTime(pedalEvents))
+        );
 
         durTotal = Math.max(midi.duration || 0, noteEndTime(notes), lastPedalEventTime(pedalEvents));
         pedalLanes = buildPedalSegments(pedalEvents, durTotal);
-        playbackNotes = buildPlaybackNotes(notes, getPedalSegments(pedalLanes, SUSTAIN_CC));
+        playbackNotes = buildPlaybackNotes(notes, sustainSegmentsByChannel);
         durTotal = Math.max(durTotal, noteEndTime(playbackNotes, 'playbackDuration'));
 
         playBtn.disabled = false;
         playBtn.textContent = 'Play';
-        renderBtn.disabled = playbackNotes.length === 0;
+        refreshRenderAvailability();
 
-        warmPianoSoon();
+        if (audioMode === 'piano') warmPianoSoon();
 
         requestAnimationFrame(draw);
       } catch (e) {

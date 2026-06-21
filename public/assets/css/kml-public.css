@@ -232,6 +232,64 @@
 	opacity: 0.85;
 }
 
+.kml-channel-key {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.45rem 0.75rem;
+	align-items: center;
+	margin: 0 0 0.75rem;
+	font-size: 0.82rem;
+	line-height: 1.3;
+}
+
+.kml-channel-key[hidden] {
+	display: none;
+}
+
+.kml-channel-key-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	min-width: 0;
+	max-width: 100%;
+	padding: 0.2rem 0.45rem 0.2rem 0.25rem;
+	border: 1px solid rgba(0,0,0,0.10);
+	border-radius: 6px;
+	background: rgba(255,255,255,0.78);
+	color: rgba(20,28,36,0.88);
+	cursor: pointer;
+	font: inherit;
+	text-align: left;
+}
+
+.kml-channel-key-item.is-muted {
+	opacity: 0.45;
+}
+
+.kml-channel-key-item:focus-visible {
+	outline: 2px solid currentColor;
+	outline-offset: 2px;
+}
+
+.kml-channel-key-item:disabled {
+	cursor: default;
+}
+
+.kml-channel-swatch {
+	flex: 0 0 auto;
+	width: 0.8rem;
+	height: 0.8rem;
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1px rgba(0,0,0,0.12);
+}
+
+.kml-channel-key-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .kml-download-audio[hidden] {
 	display: none;
 }
@@ -352,5 +410,9 @@
 
 	.kml-render-progress {
 		flex-basis: 100%;
+	}
+
+	.kml-channel-key-item {
+		width: 100%;
 	}
 }
