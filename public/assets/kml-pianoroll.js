@@ -1156,7 +1156,7 @@
     renderProgress.appendChild(renderProgressFill);
 
     setPlayButtonMode('loading');
-    setActionButtonLabel(stopBtn, '\u25a0', stopLabel);
+    setActionButtonLabel(stopBtn, '', stopLabel);
     stopBtn.disabled = true;
     stopBtn.setAttribute('aria-label', 'Stop playback and return to the beginning');
     stopBtn.title = 'Stop playback and return to the beginning';
@@ -1228,8 +1228,8 @@
     function setPlayButtonMode(mode) {
       const states = {
         loading: { icon: '\u2026', label: 'Loading', ariaLabel: 'Loading MIDI playback' },
-        pause: { icon: '\u275a\u275a', label: 'Pause', ariaLabel: 'Pause MIDI playback' },
-        play: { icon: '\u25b6', label: playLabel, ariaLabel: 'Play MIDI' },
+        pause: { icon: '', label: 'Pause', ariaLabel: 'Pause MIDI playback' },
+        play: { icon: '', label: playLabel, ariaLabel: 'Play MIDI' },
       };
       const state = states[mode] || states.play;
 

@@ -255,6 +255,37 @@
 	line-height: 1;
 }
 
+.kml-play[data-state="play"] .kml-btn-icon::before {
+	content: "";
+	width: 0;
+	height: 0;
+	margin-left: 0.08em;
+	border-top: 0.38em solid transparent;
+	border-bottom: 0.38em solid transparent;
+	border-left: 0.62em solid currentColor;
+}
+
+.kml-play[data-state="pause"] .kml-btn-icon {
+	gap: 0.2em;
+}
+
+.kml-play[data-state="pause"] .kml-btn-icon::before,
+.kml-play[data-state="pause"] .kml-btn-icon::after {
+	content: "";
+	width: 0.2em;
+	height: 0.8em;
+	border-radius: 0.04em;
+	background: currentColor;
+}
+
+.kml-stop .kml-btn-icon::before {
+	content: "";
+	width: 0.68em;
+	height: 0.68em;
+	border-radius: 0.03em;
+	background: currentColor;
+}
+
 .kml-btn-label {
 	display: inline-block;
 }
