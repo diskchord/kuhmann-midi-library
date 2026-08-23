@@ -198,7 +198,90 @@
 	opacity: 0.55;
 }
 
-.kml-render-audio.is-cancel {
+.kml-player-actions {
+	display: flex;
+	flex: 0 0 100%;
+	flex-wrap: nowrap;
+	gap: 8px;
+	align-items: stretch;
+	width: 100%;
+	padding: 0 0 10px;
+	border-bottom: 1px solid rgba(0,0,0,0.10);
+}
+
+.kml-player-actions .kml-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.42em;
+	min-height: 42px;
+	padding: 9px 14px;
+	font-size: 1rem;
+	font-weight: 600;
+	line-height: 1.1;
+	white-space: nowrap;
+}
+
+.kml-player-actions .kml-play,
+.kml-player-actions .kml-stop {
+	flex: 0 1 110px;
+}
+
+.kml-player-actions .kml-play {
+	border-color: #30363d;
+	background: #30363d;
+	color: #fff;
+}
+
+.kml-player-actions .kml-stop {
+	background: #fff;
+	color: #20262d;
+}
+
+.kml-player-actions .kml-render-audio {
+	flex: 0 1 152px;
+	margin-left: 6px;
+	border-color: #78a9d4;
+	background: #edf6fd;
+	color: #163f63;
+}
+
+.kml-btn-icon {
+	display: inline-flex;
+	flex: 0 0 1em;
+	align-items: center;
+	justify-content: center;
+	font-size: 0.9em;
+	line-height: 1;
+}
+
+.kml-btn-label {
+	display: inline-block;
+}
+
+.kml-player-actions .kml-btn:focus-visible {
+	outline: 3px solid #1473b9;
+	outline-offset: 2px;
+}
+
+@media (hover: hover) {
+	.kml-player-actions .kml-play:not([disabled]):hover {
+		border-color: #1f2429;
+		background: #1f2429;
+	}
+
+	.kml-player-actions .kml-stop:not([disabled]):hover {
+		border-color: rgba(0,0,0,0.32);
+		background: #f5f6f7;
+	}
+
+	.kml-player-actions .kml-render-audio:not([disabled]):not(.is-cancel):hover {
+		border-color: #4d8fc8;
+		background: #dfedf9;
+	}
+}
+
+.kml-player-actions .kml-render-audio.is-cancel {
 	border-color: rgba(170,40,40,0.38);
 	background: rgba(170,40,40,0.08);
 	color: #7f1d1d;
@@ -206,11 +289,17 @@
 
 .kml-render-controls {
 	display: flex;
+	flex: 0 0 100%;
 	flex-wrap: wrap;
-	gap: 14px 12px;
+	gap: 10px 12px;
 	align-items: center;
-	margin: 0;
-	padding: 18px 18px 8px;
+	width: 100%;
+	margin: -2px 0 0;
+	padding: 8px 0 2px;
+}
+
+.kml-render-controls[hidden] {
+	display: none;
 }
 
 .kml-label {
@@ -294,6 +383,12 @@
 	display: none;
 }
 
+.kml-download-audio {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.42em;
+}
+
 .kml-render-status {
 	min-width: 72px;
 	font-size: 13px;
@@ -340,6 +435,13 @@
 
 .kml-meta li {
 	margin: 0.25rem 0;
+}
+
+.kml-entry-source {
+	margin: 2rem 0 0;
+	font-size: 0.9em;
+	opacity: 0.8;
+	overflow-wrap: anywhere;
 }
 
 .kml-files-detailed {
@@ -394,8 +496,29 @@
 	}
 
 	.kml-render-controls {
-		gap: 12px;
-		padding: 16px 12px 8px;
+		gap: 8px;
+		padding: 8px 0 2px;
+	}
+
+	.kml-player-actions {
+		gap: 6px;
+	}
+
+	.kml-player-actions .kml-btn {
+		min-width: 0;
+		min-height: 44px;
+		padding: 8px 7px;
+		font-size: clamp(0.78rem, 3.7vw, 0.95rem);
+	}
+
+	.kml-player-actions .kml-play,
+	.kml-player-actions .kml-stop {
+		flex: 1 1 0;
+	}
+
+	.kml-player-actions .kml-render-audio {
+		flex: 1.3 1 0;
+		margin-left: 0;
 	}
 
 	.kml-player-upload {
@@ -414,5 +537,21 @@
 
 	.kml-channel-key-item {
 		width: 100%;
+	}
+}
+
+@media (max-width: 340px) {
+	.kml-player-actions {
+		gap: 4px;
+	}
+
+	.kml-player-actions .kml-btn {
+		padding-right: 5px;
+		padding-left: 5px;
+		font-size: 12px;
+	}
+
+	.kml-player-actions .kml-render-audio {
+		flex-grow: 1.4;
 	}
 }

@@ -4,6 +4,8 @@ Kuhmann MIDI Library is a WordPress plugin for indexing and browsing a large MID
 
 The plugin was built for publishing a navigable Kuhmann / Disklavier World MIDI mirror, but it can index any readable server-side MIDI folder.
 
+Source: [https://github.com/diskchord/kuhmann-midi-library](https://github.com/diskchord/kuhmann-midi-library)
+
 ## Features
 
 - Indexes `.mid` and `.midi` files from a configured server folder.
@@ -148,6 +150,17 @@ The plugin ships default templates in `public/templates/`. Override them by copy
 
 This repository intentionally excludes MIDI libraries and other large/generated artifacts. Keep MIDI source folders outside the plugin directory, or ensure they remain ignored by git.
 
+## Changelog
+
+### 0.1.12
+
+- Aligned Play/Pause, Stop, and WAV creation in one responsive action row.
+- Improved player loading, cancellation, and accessibility states.
+- Added Apache License 2.0 release metadata and source attribution on individual MIDI entries.
+- Expanded repository publishing metadata and ignore rules.
+
 ## License
 
-GPLv2 or later.
+Kuhmann MIDI Library is licensed under the [Apache License 2.0](LICENSE).
+
+Third-party components retain their respective licenses; see [Third-Party Notices](THIRD_PARTY_NOTICES.md).

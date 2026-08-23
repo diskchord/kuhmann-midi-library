@@ -1107,10 +1107,15 @@
     const zoom = el.querySelector('.kml-zoom');
     const zoomVal = el.querySelector('.kml-zoom-val');
     const timeEl = el.querySelector('.kml-time');
+    const controls = el.querySelector('.kml-roll-controls');
 
-    if (!canvas || !playBtn || !stopBtn || !tempo || !zoom || !timeEl) return;
+    if (!canvas || !playBtn || !stopBtn || !tempo || !zoom || !timeEl || !controls) return;
+
+    const playLabel = playBtn.textContent.trim() || 'Play';
+    const stopLabel = stopBtn.textContent.trim() || 'Stop';
 
     const channelKey = document.createElement('div');
+    const playerActions = document.createElement('div');
     const renderControls = document.createElement('div');
     const renderBtn = document.createElement('button');
     const downloadAudio = document.createElement('a');
@@ -1122,17 +1127,20 @@
     channelKey.hidden = true;
     channelKey.setAttribute('aria-label', 'Channel key');
 
+    playerActions.className = 'kml-player-actions';
+    playerActions.setAttribute('role', 'group');
+    playerActions.setAttribute('aria-label', 'Playback and audio file actions');
+
     renderControls.className = 'kml-render-controls';
+    renderControls.hidden = true;
 
     renderBtn.type = 'button';
     renderBtn.className = 'kml-btn kml-render-audio';
-    renderBtn.textContent = 'Render WAV';
     renderBtn.disabled = true;
 
     downloadAudio.className = 'kml-btn kml-download-audio';
     downloadAudio.hidden = true;
     downloadAudio.rel = 'nofollow';
-    downloadAudio.textContent = 'Download WAV';
     downloadAudio.download = audioDownloadFilename(url, el);
 
     renderStatus.className = 'kml-render-status';
@@ -1141,17 +1149,30 @@
     renderProgress.className = 'kml-render-progress';
     renderProgress.hidden = true;
     renderProgress.setAttribute('role', 'progressbar');
+    renderProgress.setAttribute('aria-label', 'WAV creation progress');
     renderProgress.setAttribute('aria-valuemin', '0');
     renderProgress.setAttribute('aria-valuemax', '100');
     renderProgress.setAttribute('aria-valuenow', '0');
     renderProgress.appendChild(renderProgressFill);
 
-    renderControls.appendChild(renderBtn);
+    setPlayButtonMode('loading');
+    setActionButtonLabel(stopBtn, '\u25a0', stopLabel);
+    stopBtn.disabled = true;
+    stopBtn.setAttribute('aria-label', 'Stop playback and return to the beginning');
+    stopBtn.title = 'Stop playback and return to the beginning';
+    setRenderButtonMode('render');
+    setActionButtonLabel(downloadAudio, '\u2193', 'Download WAV');
+
+    controls.insertBefore(playerActions, playBtn);
+    playerActions.appendChild(playBtn);
+    playerActions.appendChild(stopBtn);
+    playerActions.appendChild(renderBtn);
+
     renderControls.appendChild(downloadAudio);
     renderControls.appendChild(renderStatus);
     renderControls.appendChild(renderProgress);
+    playerActions.insertAdjacentElement('afterend', renderControls);
     canvas.insertAdjacentElement('beforebegin', channelKey);
-    canvas.insertAdjacentElement('afterend', renderControls);
 
     const ctx = canvas.getContext('2d');
 
@@ -1180,6 +1201,8 @@
     let renderProgressTimer = null;
     let activeRender = null;
     let activeSoundfont = null;
+    let playbackRequestId = 0;
+    let tempoDebounce = null;
     const mutedChannels = new Set();
 
     function setStatus(msg) {
@@ -1187,8 +1210,43 @@
       timeEl.textContent = msg;
     }
 
+    function setActionButtonLabel(button, iconText, labelText) {
+      const icon = document.createElement('span');
+      const label = document.createElement('span');
+
+      icon.className = 'kml-btn-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = iconText;
+      label.className = 'kml-btn-label';
+      label.textContent = labelText;
+
+      button.textContent = '';
+      button.appendChild(icon);
+      button.appendChild(label);
+    }
+
+    function setPlayButtonMode(mode) {
+      const states = {
+        loading: { icon: '\u2026', label: 'Loading', ariaLabel: 'Loading MIDI playback' },
+        pause: { icon: '\u275a\u275a', label: 'Pause', ariaLabel: 'Pause MIDI playback' },
+        play: { icon: '\u25b6', label: playLabel, ariaLabel: 'Play MIDI' },
+      };
+      const state = states[mode] || states.play;
+
+      setActionButtonLabel(playBtn, state.icon, state.label);
+      playBtn.dataset.state = mode in states ? mode : 'play';
+      playBtn.setAttribute('aria-label', state.ariaLabel);
+      playBtn.removeAttribute('aria-pressed');
+    }
+
+    function updateRenderControlsVisibility() {
+      renderControls.hidden =
+        downloadAudio.hidden && renderProgress.hidden && !renderStatus.textContent.trim();
+    }
+
     function setRenderStatus(msg) {
       renderStatus.textContent = msg || '';
+      updateRenderControlsVisibility();
     }
 
     function instrumentSummary(meta) {
@@ -1286,6 +1344,7 @@
       renderProgress.hidden = true;
       renderProgressFill.style.width = '0%';
       renderProgress.setAttribute('aria-valuenow', '0');
+      updateRenderControlsVisibility();
     }
 
     function startEstimatedRenderProgress(start, end, estimatedSeconds, status) {
@@ -1315,6 +1374,7 @@
       downloadAudio.hidden = true;
       downloadAudio.removeAttribute('href');
       if (status !== undefined) setRenderStatus(status);
+      else updateRenderControlsVisibility();
     }
 
     function canRenderAudio() {
@@ -1335,13 +1395,15 @@
 
     function setRenderButtonMode(mode) {
       if (mode === 'cancel') {
-        renderBtn.textContent = 'Cancel';
+        setActionButtonLabel(renderBtn, '\u00d7', 'Cancel');
         renderBtn.classList.add('is-cancel');
         renderBtn.setAttribute('aria-label', 'Cancel WAV render');
+        renderBtn.title = 'Cancel WAV creation';
       } else {
-        renderBtn.textContent = 'Render WAV';
+        setActionButtonLabel(renderBtn, '\u2193', 'Create WAV');
         renderBtn.classList.remove('is-cancel');
-        renderBtn.removeAttribute('aria-label');
+        renderBtn.setAttribute('aria-label', 'Create a downloadable WAV audio file');
+        renderBtn.title = 'Create a downloadable WAV audio file';
       }
     }
 
@@ -1558,8 +1620,25 @@
       }
     }
 
-    async function play() {
-      if (!midi) return;
+    function beginPlaybackRequest() {
+      playbackRequestId += 1;
+      return playbackRequestId;
+    }
+
+    function cancelPendingPlaybackStart() {
+      playbackRequestId += 1;
+      if (tempoDebounce !== null) {
+        window.clearTimeout(tempoDebounce);
+        tempoDebounce = null;
+      }
+    }
+
+    function isCurrentPlaybackRequest(requestId) {
+      return requestId === playbackRequestId && !activeRender;
+    }
+
+    async function play(requestId) {
+      if (!midi || !isCurrentPlaybackRequest(requestId)) return false;
 
       setTempoScale();
 
@@ -1571,9 +1650,11 @@
           setStatus('Loading instruments...');
           soundfont = await ensureSoundfontPlayback(playbackNotes);
         } catch (error) {
+          if (!isCurrentPlaybackRequest(requestId)) return false;
           console.warn('KML soundfont playback failed; falling back to piano playback.', error);
           audioMode = 'piano';
           refreshRenderAvailability();
+          renderBtn.disabled = true;
           setStatus('Loading piano...');
           piano = await ensureTonePiano({ resumeCtx: true });
         }
@@ -1581,6 +1662,8 @@
         setStatus('Loading piano...');
         piano = await ensureTonePiano({ resumeCtx: true });
       }
+
+      if (!isCurrentPlaybackRequest(requestId)) return false;
 
       // Cancel anything from a prior run/pause
       cancelScheduled();
@@ -1593,6 +1676,7 @@
       resetScheduleIndex();
       schedulePlaybackWindow();
       scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+      return true;
     }
 
     function pause() {
@@ -1603,6 +1687,7 @@
     }
 
     function stop() {
+      cancelPendingPlaybackStart();
       cancelScheduled();
       isPlaying = false;
       startAt = 0;
@@ -1752,7 +1837,7 @@
       // Auto-finish when reaching end
       if (isPlaying && tNow >= durTotal - 0.01) {
         stop();
-        playBtn.textContent = 'Play';
+        setPlayButtonMode('play');
       }
 
       requestAnimationFrame(draw);
@@ -1764,52 +1849,84 @@
 
       if (isPlaying) {
         pause();
-        playBtn.textContent = 'Play';
+        setPlayButtonMode('play');
         return;
       }
 
+      const requestId = beginPlaybackRequest();
+
       try {
         playBtn.disabled = true;
-        playBtn.textContent = 'Loading...';
-        await play();
-        playBtn.textContent = 'Pause';
+        renderBtn.disabled = true;
+        setPlayButtonMode('loading');
+        const started = await play(requestId);
+        if (!started) return;
+        setPlayButtonMode('pause');
       } catch (e) {
+        if (!isCurrentPlaybackRequest(requestId)) return;
         console.error('KML piano roll failed during play:', e);
+        stop();
         setStatus('Play failed');
-        playBtn.textContent = 'Play';
-      } finally {
+        setPlayButtonMode('play');
         playBtn.disabled = false;
+        stopBtn.disabled = false;
+        renderBtn.disabled = !canRenderAudio();
+      } finally {
+        if (isCurrentPlaybackRequest(requestId)) {
+          playBtn.disabled = false;
+          renderBtn.disabled = !canRenderAudio();
+        }
       }
     });
 
     stopBtn.addEventListener('click', () => {
       stop();
-      playBtn.textContent = 'Play';
+      setPlayButtonMode('play');
+      playBtn.disabled = !midi;
+      stopBtn.disabled = !midi;
+      renderBtn.disabled = !canRenderAudio();
     });
 
     // Debounce tempo changes so we do not restart 60 times/sec while dragging
-    let tempoDebounce = null;
     tempo.addEventListener('input', () => {
       clearRenderedAudio('');
       setTempoScale();
-      if (!isPlaying) return;
+      const shouldRestart = isPlaying || tempoDebounce !== null;
+      if (!shouldRestart) return;
 
-      const t = currentT();
-      pause();
-      startAt = t;
+      if (isPlaying) {
+        const t = currentT();
+        pause();
+        startAt = t;
+      }
 
-      if (tempoDebounce) clearTimeout(tempoDebounce);
-      tempoDebounce = setTimeout(async () => {
+      if (tempoDebounce !== null) window.clearTimeout(tempoDebounce);
+      playbackRequestId += 1;
+      playBtn.disabled = true;
+      renderBtn.disabled = true;
+      setPlayButtonMode('loading');
+
+      tempoDebounce = window.setTimeout(async () => {
+        tempoDebounce = null;
+        const requestId = beginPlaybackRequest();
+
         try {
-          playBtn.disabled = true;
-          await play();
-          playBtn.textContent = 'Pause';
+          const started = await play(requestId);
+          if (!started) return;
+          setPlayButtonMode('pause');
         } catch (e) {
+          if (!isCurrentPlaybackRequest(requestId)) return;
           console.error('KML tempo restart failed:', e);
           stop();
-          playBtn.textContent = 'Play';
-        } finally {
+          setPlayButtonMode('play');
           playBtn.disabled = false;
+          stopBtn.disabled = false;
+          renderBtn.disabled = !canRenderAudio();
+        } finally {
+          if (isCurrentPlaybackRequest(requestId)) {
+            playBtn.disabled = false;
+            renderBtn.disabled = !canRenderAudio();
+          }
         }
       }, 120);
     });
@@ -1830,15 +1947,14 @@
 
       if (!midi || !activePlaybackNotes().length) return;
 
+      cancelPendingPlaybackStart();
+      if (isPlaying) pause();
+      setPlayButtonMode('play');
+
       const renderState = createRenderState();
       activeRender = renderState;
 
       try {
-        if (isPlaying) {
-          pause();
-          playBtn.textContent = 'Play';
-        }
-
         clearRenderedAudio('Preparing WAV...');
         setTempoScale();
         setVolume();
@@ -1903,6 +2019,7 @@
     });
 
     window.addEventListener('pagehide', () => {
+      stop();
       cancelActiveRender('');
       clearRenderedAudio('');
     });
@@ -1911,7 +2028,7 @@
     (async () => {
       try {
         playBtn.disabled = true;
-        playBtn.textContent = 'Loading...';
+        setPlayButtonMode('loading');
         setZoom();
         setTempoScale();
         setVolume();
@@ -1936,7 +2053,8 @@
         durTotal = Math.max(durTotal, noteEndTime(playbackNotes, 'playbackDuration'));
 
         playBtn.disabled = false;
-        playBtn.textContent = 'Play';
+        stopBtn.disabled = false;
+        setPlayButtonMode('play');
         refreshRenderAvailability();
 
         if (audioMode === 'piano') warmPianoSoon();
@@ -1945,7 +2063,12 @@
       } catch (e) {
         console.error('KML piano roll failed:', e);
         setStatus('Preview unavailable');
+        setPlayButtonMode('play');
+        playBtn.setAttribute('aria-label', 'MIDI playback unavailable');
+        playBtn.title = 'MIDI playback unavailable';
         playBtn.disabled = true;
+        stopBtn.disabled = true;
+        renderBtn.disabled = true;
       }
     })();
   }

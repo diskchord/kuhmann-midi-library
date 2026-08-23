@@ -1,20 +1,36 @@
 <?php
 /**
  * Plugin Name: Kuhmann MIDI Library
+ * Plugin URI: https://github.com/diskchord/kuhmann-midi-library
  * Description: Index and display a large MIDI directory as an SEO-friendly, navigable library (custom post type + folder taxonomy).
- * Version: 0.1.11
+ * Version: 0.1.12
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: alexanderpeppe.com
- * License: GPLv2 or later
+ * License: Apache-2.0
+ * License URI: https://www.apache.org/licenses/LICENSE-2.0
  * Text Domain: kuhmann-midi-library
+ */
+
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'KML_VERSION', '0.1.11' );
+define( 'KML_VERSION', '0.1.12' );
 define( 'KML_PLUGIN_FILE', __FILE__ );
 define( 'KML_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'KML_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

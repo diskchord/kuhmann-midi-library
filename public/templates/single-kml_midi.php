@@ -245,10 +245,17 @@ if (function_exists('do_shortcode')) {
 				the_content();
 			} else {
 				echo '<p>If your piano has a Bluetooth-MIDI adapter, you can send this file directly from your phone or tablet. <a href="https://www.alexanderpeppe.com/aps-notecast-beta-sign-up-send-midi-files-using-bluetooth-midi/">APS NoteCast</a> supports Android devices; <a href="https://www.alexanderpeppe.com/pianostream-for-disklaviers/">PianoStream</a>, Sweet MIDI, and other Bluetooth-MIDI apps are also available depending on your device.<br /><br />Otherwise, you can put them on a USB stick. Files will be playable natively on newer Disklaviers, such as the Mark IV, E3, and ENSPIRE. You can see my <a href="https://www.alexanderpeppe.com/disklavier-compatibility-table/">Disklavier compatibility table</a> to see which instruments support USB.<br /><br />For older generations of Disklavier using floppy disks or Nalbantov USB emulators, see my article on <a href="https://www.alexanderpeppe.com/eseq-and-pianodir-fil/">converting MIDI files to E-SEQ and creating PIANODIR.FIL</a>.<br /><br />Read more about <a href="https://www.alexanderpeppe.com/kuhmann-disklavier-world/">the former Kuhmann Directory (Disklavier World)</a>.</p>';
-			}
-			?>
+				}
+				?>
 
-		</div>
+			<p class="kml-entry-source">
+				<em>
+					<?php echo esc_html__( 'Source:', 'kuhmann-midi-library' ); ?>
+					<a href="<?php echo esc_url( 'https://github.com/diskchord/kuhmann-midi-library' ); ?>" rel="external">https://github.com/diskchord/kuhmann-midi-library</a>
+				</em>
+			</p>
+
+			</div>
 	</article>
 
 </main>
