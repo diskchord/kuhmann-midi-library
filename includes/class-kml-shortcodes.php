@@ -92,6 +92,11 @@ final class KML_Shortcodes {
 			$filename = wp_basename( parse_url( $file_url, PHP_URL_PATH ) ?: $file_url );
 		}
 
+		if ( '' === $file_url ) {
+			$file_url = plugins_url( 'public/assets/chromatic-scale.mid', KML_PLUGIN_FILE );
+			$filename = __( 'Chromatic scale', 'kuhmann-midi-library' );
+		}
+
 		$show_upload = self::truthy_shortcode_value( (string) $atts['upload'] );
 		$upload_id = 'kml_midi_upload_' . wp_generate_uuid4();
 

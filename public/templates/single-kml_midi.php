@@ -15,12 +15,11 @@ the_post();
 
 $post_id  = get_the_ID();
 $file_url = KML_Public::get_public_file_url( (int) $post_id );
-$abs_path = (string) get_post_meta( $post_id, 'kml_abspath', true );
 $relpath  = (string) get_post_meta( $post_id, 'kml_relpath', true );
 $filesize = (int) get_post_meta( $post_id, 'kml_filesize', true );
 $mtime    = (int) get_post_meta( $post_id, 'kml_mtime', true );
 
-$has_readable_file = ( '' !== $abs_path ) && file_exists( $abs_path ) && is_readable( $abs_path );
+$has_readable_file = '' !== KML_Public::get_downloadable_file( (int) $post_id );
 $download_url      = $has_readable_file ? KML_Public::get_download_url( (int) $post_id ) : '';
 
 $terms = get_the_terms( $post_id, KML_Post_Types::TAX_FOLDER );
@@ -127,6 +126,7 @@ wp_enqueue_script(
 	<article <?php post_class( 'kml-midisingle' ); ?>>
 		<header class="entry-header">
 			<h1 class="entry-title"><?php the_title(); ?></h1>
+			<p class="kml-file-summary"><?php echo esc_html( KML_Public::get_file_page_summary( (int) $post_id ) ); ?></p>
 
 			<?php if ( $folder_term ) : ?>
 				<nav class="kml-breadcrumbs" aria-label="<?php echo esc_attr__( 'Breadcrumbs', 'kuhmann-midi-library' ); ?>">
@@ -260,20 +260,6 @@ if (function_exists('do_shortcode')) {
 
 </main>
 
-<?php
-// Lightweight JSON-LD for SEO.
-$schema = array(
-	'@context'       => 'https://schema.org',
-	'@type'          => 'MusicRecording',
-	'name'           => get_the_title(),
-	'encodingFormat' => 'audio/midi',
-	'isAccessibleForFree' => true,
-);
-if ( $download_url ) {
-	$schema['contentUrl'] = $download_url;
-}
-?>
-<script type="application/ld+json"><?php echo wp_json_encode( $schema ); ?></script>
 <script type="text/javascript">(async function () {
   // Wait until the custom elements are registered
   if (window.customElements?.whenDefined) {

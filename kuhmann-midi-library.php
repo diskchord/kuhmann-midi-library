@@ -3,7 +3,7 @@
  * Plugin Name: Kuhmann MIDI Library
  * Plugin URI: https://github.com/diskchord/kuhmann-midi-library
  * Description: Index and display a large MIDI directory as an SEO-friendly, navigable library (custom post type + folder taxonomy).
- * Version: 0.1.12
+ * Version: 0.1.13
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: alexanderpeppe.com
@@ -30,7 +30,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'KML_VERSION', '0.1.12' );
+define( 'KML_VERSION', '0.1.13' );
 define( 'KML_PLUGIN_FILE', __FILE__ );
 define( 'KML_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'KML_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -40,6 +40,9 @@ require_once KML_PLUGIN_DIR . 'includes/class-kml-indexer.php';
 require_once KML_PLUGIN_DIR . 'includes/class-kml-admin.php';
 require_once KML_PLUGIN_DIR . 'includes/class-kml-shortcodes.php';
 require_once KML_PLUGIN_DIR . 'includes/class-kml-public.php';
+require_once KML_PLUGIN_DIR . 'includes/class-kml-seo.php';
+require_once KML_PLUGIN_DIR . 'includes/class-kml-availability.php';
+require_once KML_PLUGIN_DIR . 'includes/class-kml-sitemaps.php';
 
 final class KML_Library_Plugin {
 
@@ -64,6 +67,9 @@ final class KML_Library_Plugin {
 
 		// Public.
 		KML_Public::init();
+		KML_SEO::init();
+		KML_Availability::init();
+		KML_Sitemaps::init();
 
 		// Shortcodes.
 		KML_Shortcodes::init();

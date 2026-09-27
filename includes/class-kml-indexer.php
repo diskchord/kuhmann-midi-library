@@ -211,7 +211,10 @@ private static function force_valid_utf8( string $s ): string {
 		// Safety: ensure file is inside the configured root folder.
 		$real_root = realpath( $root );
 		$real_file = realpath( $abs_file );
-		if ( ! $real_root || ! $real_file || 0 !== strpos( $real_file, $real_root ) ) {
+		if ( ! $real_root || ! is_dir( $real_root ) || ! $real_file
+			|| ! is_file( $real_file ) || ! is_readable( $real_file )
+			|| ! in_array( strtolower( pathinfo( $real_file, PATHINFO_EXTENSION ) ), self::EXTENSIONS, true )
+			|| 0 !== strpos( $real_file, rtrim( $real_root, DIRECTORY_SEPARATOR ) . DIRECTORY_SEPARATOR ) ) {
 			return;
 		}
 

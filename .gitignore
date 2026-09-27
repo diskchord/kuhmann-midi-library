@@ -45,6 +45,7 @@ wp-content/upgrade/
 # Large MIDI payloads should live outside this plugin repository
 *.mid
 *.midi
+!public/assets/chromatic-scale.mid
 
 # Release archives and backups
 *.zip

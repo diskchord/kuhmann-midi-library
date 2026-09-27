@@ -50,6 +50,8 @@ if ( ! ( $term instanceof WP_Term ) ) {
 		$desc = term_description( $term );
 		if ( $desc ) {
 			echo '<div class="kml-term-description">' . wp_kses_post( $desc ) . '</div>';
+		} else {
+			echo '<p class="kml-term-description">' . esc_html( KML_Public::get_folder_page_summary( $term ) ) . '</p>';
 		}
 		?>
 	</header>

@@ -10,6 +10,7 @@ final class KML_Public {
 	public static function init(): void {
 		add_action( 'init', array( __CLASS__, 'add_rewrite_rules' ) );
 		add_filter( 'query_vars', array( __CLASS__, 'query_vars' ) );
+		add_action( 'template_redirect', array( __CLASS__, 'maybe_404_missing_file' ), 0 );
 		add_action( 'template_redirect', array( __CLASS__, 'maybe_serve_download' ) );
 		add_action( 'template_redirect', array( __CLASS__, 'maybe_count_file_view' ), 20 );
 		add_action( 'kml_purge_player_uploads', array( __CLASS__, 'purge_player_uploads' ) );
@@ -17,7 +18,6 @@ final class KML_Public {
 		add_filter( 'template_include', array( __CLASS__, 'template_loader' ) );
 
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_assets' ) );
-		add_action( 'wp_head', array( __CLASS__, 'print_meta_description' ), 1 );
 		add_filter( 'get_the_excerpt', array( __CLASS__, 'filter_file_excerpt' ), 10, 2 );
 		add_filter( 'get_the_author_display_name', array( __CLASS__, 'filter_file_author_display_name' ), 10, 3 );
 		add_filter( 'the_author', array( __CLASS__, 'filter_file_author_display_name' ), 10, 1 );
@@ -211,6 +211,65 @@ final class KML_Public {
 
 	public static function get_download_url( int $post_id ): string {
 		return esc_url_raw( home_url( user_trailingslashit( 'midi-download/' . $post_id ) ) );
+	}
+
+	/** Return the real file the public download endpoint can serve, or an empty string. */
+	public static function get_downloadable_file( int $post_id ): string {
+		$post = get_post( $post_id );
+		if ( ! $post || KML_Post_Types::POST_TYPE !== $post->post_type
+			|| 'publish' !== $post->post_status || '' !== $post->post_password ) {
+			return '';
+		}
+
+		$abs = (string) get_post_meta( $post_id, 'kml_abspath', true );
+		return self::resolve_library_file( $abs );
+	}
+
+	/** Validate an indexed path without loading a post (also used by listing queries). */
+	public static function resolve_library_file( string $abs ): string {
+		$root = KML_Indexer::get_root_path();
+		if ( '' === $abs || '' === $root || false !== strpos( $abs . $root, "\0" ) ) {
+			return '';
+		}
+
+		$real_root = realpath( $root );
+		$real_file = realpath( $abs );
+		if ( ! $real_root || ! is_dir( $real_root ) || ! $real_file
+			|| ! self::path_is_inside( $real_file, $real_root )
+			|| ! is_file( $real_file ) || ! is_readable( $real_file )
+			|| ! in_array( strtolower( pathinfo( $real_file, PATHINFO_EXTENSION ) ), array( 'mid', 'midi' ), true ) ) {
+			return '';
+		}
+
+		return $real_file;
+	}
+
+	/** Reject stale public permalinks before redirects, view counts, SEO, or templates run. */
+	public static function maybe_404_missing_file(): void {
+		if ( is_admin() || ! is_singular( KML_Post_Types::POST_TYPE ) ) {
+			return;
+		}
+		$post_id = (int) get_queried_object_id();
+		if ( ( is_preview() && current_user_can( 'edit_post', $post_id ) )
+			|| '' !== self::get_downloadable_file( $post_id ) ) {
+			return;
+		}
+
+		global $wp_query, $post;
+		$wp_query->posts = array();
+		$wp_query->post = null;
+		$wp_query->post_count = 0;
+		$wp_query->found_posts = 0;
+		$wp_query->max_num_pages = 0;
+		$wp_query->queried_object = null;
+		$wp_query->queried_object_id = 0;
+		$post = null;
+		$wp_query->set_404();
+		status_header( 404 );
+		nocache_headers();
+		// Do not redirect a missing-file 404 back to the stale post's permalink.
+		add_filter( 'redirect_canonical', '__return_false' );
+		add_filter( 'old_slug_redirect_url', '__return_false' );
 	}
 
 	public static function is_direct_player_request(): bool {
@@ -468,49 +527,25 @@ final class KML_Public {
 		}
 
 		$excerpt = trim( wp_strip_all_tags( (string) get_post_field( 'post_excerpt', $post_id ) ) );
-		if ( '' !== $excerpt && ! self::is_legacy_file_excerpt( $excerpt ) ) {
-			if ( false === stripos( $excerpt, 'midi' ) || false === stripos( $excerpt, 'download' ) ) {
-				$excerpt = sprintf(
-					/* translators: %s: custom MIDI page excerpt. */
-					__( 'MIDI file download: %s', 'kuhmann-midi-library' ),
-					$excerpt
-				);
-			}
+		if ( '' !== $excerpt && ! self::is_generated_file_excerpt( $excerpt ) ) {
 			return self::trim_summary( $excerpt, 260 );
 		}
 
-		$title    = get_the_title( $post_id );
-		$folder   = self::get_post_folder_label( $post_id );
-		$filesize = (int) get_post_meta( $post_id, 'kml_filesize', true );
-		$mtime    = (int) get_post_meta( $post_id, 'kml_mtime', true );
-
-		$summary = sprintf(
-			/* translators: %s: MIDI file title. */
-			__( 'Download the %s MIDI file from the Kuhmann / Disklavier World mirror.', 'kuhmann-midi-library' ),
-			$title
-		);
+		$title  = get_the_title( $post_id );
+		$folder = self::get_post_folder_label( $post_id );
 
 		if ( '' !== $folder ) {
-			$summary .= ' ' . sprintf(
-				/* translators: %s: folder path. */
-				__( 'This Yamaha Disklavier-ready MIDI download is filed under %s.', 'kuhmann-midi-library' ),
+			$summary = sprintf(
+				/* translators: 1: MIDI file title, 2: folder path. */
+				__( 'Download %1$s MIDI from %2$s for Yamaha Disklavier. Part of the Kuhmann / Disklavier World collection.', 'kuhmann-midi-library' ),
+				$title,
 				$folder
 			);
-		}
-
-		if ( $filesize > 0 ) {
-			$summary .= ' ' . sprintf(
-				/* translators: %s: formatted file size. */
-				__( 'File size: %s.', 'kuhmann-midi-library' ),
-				size_format( $filesize )
-			);
-		}
-
-		if ( $mtime > 0 ) {
-			$summary .= ' ' . sprintf(
-				/* translators: %s: localized modified date. */
-				__( 'Last updated: %s.', 'kuhmann-midi-library' ),
-				date_i18n( get_option( 'date_format' ), $mtime )
+		} else {
+			$summary = sprintf(
+				/* translators: %s: MIDI file title. */
+				__( 'Download %s MIDI for Yamaha Disklavier from the Kuhmann / Disklavier World collection.', 'kuhmann-midi-library' ),
+				$title
 			);
 		}
 
@@ -518,23 +553,35 @@ final class KML_Public {
 	}
 
 	public static function get_folder_page_summary( WP_Term $term ): string {
+		$description = trim( wp_strip_all_tags( (string) $term->description ) );
+		if ( '' !== $description ) {
+			return self::trim_summary( $description, 260 );
+		}
+
 		$count = self::term_count_including_children( $term, KML_Post_Types::TAX_FOLDER );
 		$path  = self::get_term_name_path( $term );
 
 		if ( $count > 0 ) {
-			return sprintf(
+			$summary = sprintf(
 				/* translators: 1: folder path, 2: number of MIDI files. */
-				__( 'Browse and download MIDI files in the %1$s folder from the Kuhmann / Disklavier World mirror. Includes %2$s Yamaha Disklavier-ready MIDI downloads.', 'kuhmann-midi-library' ),
+				_n(
+					'Browse %1$s: %2$s MIDI file to download for Yamaha Disklavier. Explore the Kuhmann / Disklavier World collection.',
+					'Browse %1$s: %2$s MIDI files to download for Yamaha Disklavier. Explore the Kuhmann / Disklavier World collection.',
+					$count,
+					'kuhmann-midi-library'
+				),
 				$path,
 				number_format_i18n( $count )
 			);
+		} else {
+			$summary = sprintf(
+				/* translators: %s: folder path. */
+				__( 'Browse the %s MIDI folder in the Kuhmann / Disklavier World collection for Yamaha Disklavier.', 'kuhmann-midi-library' ),
+				$path
+			);
 		}
 
-		return sprintf(
-			/* translators: %s: folder path. */
-			__( 'Browse MIDI file downloads in the %s folder from the Kuhmann / Disklavier World mirror.', 'kuhmann-midi-library' ),
-			$path
-		);
+		return self::trim_summary( $summary, 260 );
 	}
 
 	public static function filter_file_excerpt( string $excerpt, $post ): string {
@@ -543,7 +590,7 @@ final class KML_Public {
 		}
 
 		$excerpt = trim( $excerpt );
-		if ( '' !== $excerpt && ! self::is_legacy_file_excerpt( $excerpt ) ) {
+		if ( '' !== $excerpt && ! self::is_generated_file_excerpt( $excerpt ) ) {
 			return $excerpt;
 		}
 
@@ -586,6 +633,11 @@ final class KML_Public {
 	}
 
 	public static function render_file_list_item( int $post_id, bool $include_details = false ): void {
+		// Recheck at output time in case a file disappeared after the listing query.
+		if ( '' === self::get_downloadable_file( $post_id ) ) {
+			return;
+		}
+
 		$classes = array( 'kml-file-result' );
 		if ( $include_details ) {
 			$classes[] = 'kml-file-result-detailed';
@@ -614,31 +666,31 @@ final class KML_Public {
 			return;
 		}
 
-		$post = get_post( $post_id );
-		if ( ! $post || KML_Post_Types::POST_TYPE !== $post->post_type ) {
-			status_header( 404 );
-			exit;
-		}
-
-		$abs = (string) get_post_meta( $post_id, 'kml_abspath', true );
+		$real_file = self::get_downloadable_file( $post_id );
 		$rel = (string) get_post_meta( $post_id, 'kml_relpath', true );
-
-		if ( empty( $abs ) || ! file_exists( $abs ) || ! is_readable( $abs ) ) {
+		if ( '' === $real_file ) {
 			status_header( 404 );
+			nocache_headers();
 			exit;
 		}
 
-		// Safety: ensure requested file is inside configured root.
-		$root = KML_Indexer::get_root_path();
-		$real_root = $root ? realpath( $root ) : '';
-		$real_file = realpath( $abs );
-		if ( ! $real_root || ! $real_file || 0 !== strpos( $real_file, $real_root ) ) {
-			status_header( 403 );
+		// Open before sending attachment headers; the file may disappear after validation.
+		$fp = @fopen( $real_file, 'rb' );
+		if ( false === $fp ) {
+			status_header( 404 );
+			nocache_headers();
 			exit;
 		}
 
-		$filename = basename( $rel ? $rel : $abs );
-		$filesize = (int) filesize( $real_file );
+		$filename = basename( $rel ? $rel : $real_file );
+		$stat = fstat( $fp );
+		if ( false === $stat ) {
+			fclose( $fp );
+			status_header( 500 );
+			nocache_headers();
+			exit;
+		}
+		$filesize = (int) $stat['size'];
 
 		nocache_headers();
 
@@ -646,13 +698,6 @@ final class KML_Public {
 		header( 'Content-Type: audio/midi' );
 		header( 'Content-Disposition: attachment; filename="' . rawurlencode( $filename ) . '"' );
 		header( 'Content-Length: ' . $filesize );
-
-		// Stream file.
-		$fp = fopen( $real_file, 'rb' );
-		if ( false === $fp ) {
-			status_header( 500 );
-			exit;
-		}
 
 		self::increment_counter( $post_id, KML_Post_Types::META_DOWNLOAD_COUNT );
 
@@ -785,7 +830,7 @@ final class KML_Public {
 		);
 	}
 
-	private static function get_post_folder_label( int $post_id ): string {
+	public static function get_post_folder_label( int $post_id ): string {
 		$terms = get_the_terms( $post_id, KML_Post_Types::TAX_FOLDER );
 		if ( is_array( $terms ) && ! empty( $terms ) ) {
 			return self::get_term_name_path( $terms[0] );
@@ -795,7 +840,7 @@ final class KML_Public {
 		return str_replace( '/', ' / ', $folder_rel );
 	}
 
-	private static function get_term_name_path( WP_Term $term ): string {
+	public static function get_term_name_path( WP_Term $term ): string {
 		$parts   = array();
 		$current = $term;
 
@@ -858,10 +903,20 @@ final class KML_Public {
 		return (string) apply_filters( 'kml_default_author_label', 'Alexander Peppe' );
 	}
 
-	private static function is_legacy_file_excerpt( string $excerpt ): bool {
-		$excerpt = strtolower( wp_strip_all_tags( $excerpt ) );
-		return false !== strpos( $excerpt, 'is a downloadable file resource' )
-			&& false !== strpos( $excerpt, 'related instructions or context available on the site' );
+	private static function is_generated_file_excerpt( string $excerpt ): bool {
+		$excerpt = trim( wp_strip_all_tags( $excerpt ) );
+		$lower   = strtolower( $excerpt );
+		if ( false !== strpos( $lower, 'is a downloadable file resource' )
+			&& false !== strpos( $lower, 'related instructions or context available on the site' ) ) {
+			return true;
+		}
+
+		// Existing imports stored this generated text. Refresh it at display time
+		// without rewriting edited excerpts or requiring another library scan.
+		return 1 === preg_match(
+			'~^Download the .+ MIDI file from the Kuhmann / Disklavier World mirror\.(?: This Yamaha Disklavier-ready MIDI download is filed under .+\.)?(?: Filename: .+\.)?(?: File size: [\d.,]+\s*\w+\.)?(?: Last updated: .+\.)?$~i',
+			$excerpt
+		);
 	}
 
 	private static function term_count_including_children( WP_Term $term, string $taxonomy ): int {
@@ -882,14 +937,22 @@ final class KML_Public {
 		return $total;
 	}
 
-	private static function trim_summary( string $summary, int $max_length ): string {
-		$summary = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $summary ) ) );
-		if ( '' === $summary || strlen( $summary ) <= $max_length ) {
+	public static function trim_summary( string $summary, int $max_length ): string {
+		if ( $max_length < 1 ) {
+			return '';
+		}
+
+		$summary = html_entity_decode( wp_strip_all_tags( $summary ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		$summary = trim( (string) preg_replace( '/\s+/u', ' ', wp_check_invalid_utf8( $summary ) ) );
+		$chars   = preg_split( '//u', $summary, -1, PREG_SPLIT_NO_EMPTY );
+		if ( false === $chars || count( $chars ) <= $max_length ) {
 			return $summary;
 		}
 
-		$trimmed = substr( $summary, 0, $max_length );
-		$trimmed = preg_replace( '/\s+\S*$/', '', $trimmed );
+		// Reserve one character for punctuation; splitting UTF-8 characters also
+		// works on hosts without the optional mbstring PHP extension.
+		$trimmed = implode( '', array_slice( $chars, 0, $max_length - 1 ) );
+		$trimmed = preg_replace( '/\s+\S*$/u', '', $trimmed );
 
 		return rtrim( (string) $trimmed, " \t\n\r\0\x0B.,;:" ) . '.';
 	}
