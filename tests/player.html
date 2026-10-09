@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIDI player browser regressions</title>
+<link rel="stylesheet" href="../public/assets/css/kml-public.css">
+<body>
+<main style="max-width: 1000px; margin: auto">
+  <div class="kml-midi-player-tool" data-local-files="1" data-demo-url="demo.mid" data-demo-title="Archive demo">
+    <div class="kml-player-upload">
+      <div class="kml-upload-label">Open a MIDI file</div>
+      <div class="kml-upload-picker">
+        <label class="kml-upload-button" for="test-file">Choose MIDI</label>
+        <input id="test-file" class="kml-upload-input" type="file" accept=".mid,.midi,audio/midi,audio/x-midi">
+        <span class="kml-upload-file-name" data-default="No file selected">No file selected</span>
+      </div>
+      <button type="button" class="kml-btn kml-demo" data-midi-url="demo.mid" data-midi-title="Archive demo">Try a demo</button>
+      <p class="kml-file-hint">Choose a file or drag one onto this player.</p>
+      <p class="kml-file-privacy">Your MIDI file stays on your device.</p>
+    </div>
+    <p class="kml-file-message kml-upload-message kml-upload-error" role="status" hidden></p>
+    <section class="kml-player">
+      <h2 class="kml-player-title">Choose a MIDI file</h2>
+      <div class="kml-roll" data-midi-url="" data-demo-url="demo.mid" data-demo-title="Archive demo">
+        <div class="kml-roll-controls">
+          <button type="button" class="kml-btn kml-play">Play</button>
+          <button type="button" class="kml-btn kml-stop">Stop</button>
+          <label class="kml-label">Tempo <input class="kml-tempo" type="range" min="50" max="160" value="100"><span class="kml-tempo-val">100%</span></label>
+          <label class="kml-label">Volume <input class="kml-volume" type="range" min="0" max="200" value="100"><span class="kml-volume-val">100%</span></label>
+          <label class="kml-label">Zoom <input class="kml-zoom" type="range" min="20" max="220" value="90"><span class="kml-zoom-val">90</span></label>
+          <span class="kml-time">0:00 / --:--</span>
+        </div>
+        <canvas class="kml-canvas" height="560"></canvas>
+      </div>
+    </section>
+  </div>
+  <pre id="results" style="white-space: pre-wrap">Running browser regressions…</pre>
+</main>
+<script src="../public/assets/Midi.js"></script>
+<script>
+// Keep the production DOM, parser, file reader, and scheduling code. Replace only
+// audio output and time so passage-boundary regressions are deterministic.
+(() => {
+  let now = 0;
+  let id = 0;
+  const intervals = new Map();
+  const frames = new Map();
+  const audio = [];
+  const requests = [];
+  const nativeTimeout = window.setTimeout.bind(window);
+  Object.defineProperty(performance, 'now', { value: () => now * 1000 });
+  window.setInterval = callback => { intervals.set(++id, callback); return id; };
+  window.clearInterval = timer => intervals.delete(timer);
+  window.requestAnimationFrame = callback => { frames.set(++id, callback); return id; };
+  window.cancelAnimationFrame = timer => frames.delete(timer);
+  window.requestIdleCallback = () => ++id;
+
+  class Node {
+    constructor() { this.gain = { value: 1, rampTo() {}, cancelScheduledValues() {}, setTargetAtTime() {} }; }
+    connect() { return this; }
+    chain() { return this; }
+    dispose() { return this; }
+  }
+  class Source extends Node {
+    constructor(options) { super(); this.options = options; this.record = { mode: 'piano' }; }
+    start(when, offset, duration, velocity) {
+      Object.assign(this.record, { when, duration, velocity, offset, source: this });
+      audio.push(this.record);
+      return this;
+    }
+    stop(when) { this.record.stoppedAt = when; return this; }
+    dispose() { this.record.disposed = true; return this; }
+  }
+  class Buffers {
+    constructor(options) { this.loaded = true; queueMicrotask(options.onload); }
+    get() { return { duration: 30, loaded: true, get: () => ({ duration: 30 }) }; }
+  }
+  class Sampler extends Node {
+    constructor(options) { super(); queueMicrotask(options.onload); }
+    triggerAttack(note, when, velocity) { audio.push({ mode: 'sampler', note, when, velocity }); }
+    triggerRelease() {}
+    releaseAll() {}
+  }
+  window.Tone = {
+    ToneAudioBuffers: Buffers, ToneBufferSource: Source, Sampler,
+    Filter: Node, Compressor: Node, Gain: Node, Destination: new Node(),
+    start: async () => {}, now: () => now + 0.1, immediate: () => now,
+    getContext: () => ({ rawContext: {} }),
+  };
+  window.AudioContext = class {
+    constructor() { this.state = 'running'; this.destination = new Node(); }
+    get currentTime() { return now; }
+    createGain() { return new Node(); }
+    async resume() {}
+  };
+  window.Soundfont = {
+    instrument: async (context, name) => ({
+      play(note, when, options) {
+        const record = { mode: 'soundfont', name, note, when, duration: options.duration, adsr: options.adsr };
+        audio.push(record);
+        return { stop: t => { record.stoppedAt = t; }, disconnect: () => { record.disconnected = true; } };
+      },
+      stop(when) { for (const record of audio) if (record.name === name) record.stoppedAt = when; },
+    }),
+  };
+
+  function fixture(title = 'Local ensemble') {
+    const midi = new Midi();
+    midi.header.name = title;
+    const piano = midi.addTrack();
+    piano.name = title;
+    piano.channel = 0;
+    piano.instrument.number = 0;
+    piano.addNote({ midi: 60, time: 0, duration: 0.5, velocity: 0.8 });
+    piano.addCC({ number: 64, time: 0.25, value: 1 });
+    piano.addCC({ number: 64, time: 4, value: 0 });
+    piano.addNote({ midi: 64, time: 4.95, duration: 1, velocity: 0.8 });
+    piano.addNote({ midi: 67, time: 6, duration: 1, velocity: 0.8 });
+    piano.addNote({ midi: 72, time: 11, duration: 1, velocity: 0.8 });
+    const strings = midi.addTrack();
+    strings.name = 'Strings';
+    strings.channel = 1;
+    strings.instrument.number = 48;
+    strings.addNote({ midi: 48, time: 0, duration: 8, velocity: 0.6 });
+    return midi.toArray();
+  }
+  window.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), options });
+    if (String(url).endsWith('demo.mid')) {
+      return { ok: true, headers: new Headers(), arrayBuffer: async () => fixture('Archive demo').buffer };
+    }
+    throw new Error('Unexpected network request: ' + url);
+  };
+  window.XMLHttpRequest = class { constructor() { throw new Error('Local files must not use XMLHttpRequest'); } };
+  navigator.sendBeacon = () => { throw new Error('Local files must not use sendBeacon'); };
+
+  window.testPlayer = {
+    audio, requests, fixture,
+    wait: (milliseconds = 0) => new Promise(resolve => nativeTimeout(resolve, milliseconds)),
+    frame() { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback(now * 1000)); },
+    advance(seconds) {
+      const end = now + seconds;
+      while (now < end - 0.000001) {
+        now = Math.min(end, now + 0.025);
+        for (const callback of [...intervals.values()]) callback();
+        this.frame();
+      }
+    },
+    now: () => now,
+    intervalCount: () => intervals.size,
+  };
+})();
+</script>
+<script src="../public/assets/kml-pianoroll.js"></script>
+<script src="../public/assets/js/kml-public.js"></script>
+<script src="player-tests.js"></script>
+</body>
+</html>

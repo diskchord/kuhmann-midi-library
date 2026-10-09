@@ -2,6 +2,19 @@
 
 The Apache License 2.0 in [`LICENSE`](LICENSE) applies to Kuhmann MIDI Library's original source code. It does not replace the licenses of third-party components.
 
+## Musical demo
+
+`public/assets/demo-cloud-whisper.mid` is a 38.4-second excerpt of **Cloud Whisper (Bennie Gunn)** from the user's Kuhmann / Disklavier World archive, `Bennie Gunn/04-Cloud Whisper (Bennie Gunn).mid`.
+
+- [Original archive entry and full MIDI](https://www.alexanderpeppe.com/midi/04-cloud-whisper-bennie-gunn-ce57643e/)
+- Source SHA-256: `62931e0098da4bc1e76be42b89252d447ac3c9fcb520306d38387ac125a27875`
+- Excerpt: original ticks 1920–32640 at 480 ticks per quarter note, 100 BPM (the first sixteen musical bars, after the initial silent bar).
+- Parts: electric piano, jazz guitar, vibraphone, fretless bass, and drums. Notes, timing, velocity, instrument assignments, controllers, and pitch bends within the excerpt retain the original performance data. Initial setup is moved to the start; sounding notes and pedals are released at the excerpt's end.
+
+The composition and MIDI performance are third-party musical material and are not covered by the plugin's Apache License. The archive supplies no separate license for this file. This excerpt is included as the user's requested archive demo, with its existing attribution retained.
+
+To reproduce the excerpt from the original archive file, run `python3 scripts/build-demo.py /path/to/original.mid` (requires the Python `mido` package).
+
 ## Bundled MIDI parser
 
 `public/assets/Midi.js` is a browser bundle of [`@tonejs/midi` 2.0.28](https://github.com/Tonejs/Midi). The bundle includes `midi-file` and `array-flatten`. These components are distributed under the MIT License with the following copyright notices:

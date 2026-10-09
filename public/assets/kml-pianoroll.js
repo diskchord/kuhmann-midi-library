@@ -20,7 +20,6 @@
   const SOUNDFONT_MASTER_GAIN = 0.82;
   const SOUNDFONT_NAME = 'FluidR3_GM';
   const SOUNDFONT_FORMAT = 'mp3';
-  const SOUNDFONT_FALLBACK_INSTRUMENT = 'acoustic_grand_piano';
   const DRUM_CHANNEL = 9;
   const PIANO_PROGRAM_MAX = 7;
   const AUDIO_RENDER_CHANNELS = 2;
@@ -28,6 +27,7 @@
   const AUDIO_RENDER_TAIL_SECONDS = 1.2;
   const NOTE_SCHEDULE_LOOKAHEAD = 0.1;
   const NOTE_SCHEDULE_INTERVAL_MS = 25;
+  const MAX_MIDI_BYTES = 20 * 1024 * 1024;
   const PIANO_SAMPLE_ROOTS = [
     21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 72, 75, 78, 81, 84,
     87, 90, 93, 96, 99, 102, 105, 108,
@@ -216,7 +216,7 @@
   async function ensureTonePiano(opts) {
     const options = opts || {};
 
-    if (!window.Tone || typeof Tone.Sampler !== 'function') {
+    if (!window.Tone || typeof Tone.ToneAudioBuffers !== 'function') {
       throw new Error('Tone.js was not loaded.');
     }
 
@@ -229,18 +229,21 @@
 
     tonePianoPromise = new Promise((resolve, reject) => {
       let piano = null;
-      const sampler = new Tone.Sampler({
-        attack: PIANO_NOTE_ATTACK,
+      const buffers = new Tone.ToneAudioBuffers({
         baseUrl: PIANO_SAMPLE_BASE_URL,
-        curve: 'exponential',
-        onerror: reject,
+        onerror: (error) => {
+          if (piano) Object.values(piano).forEach((node) => {
+            try { node.dispose(); } catch (e) {}
+          });
+          reject(error);
+        },
         onload: () => {
           tonePiano = piano;
           resolve(piano);
         },
-        release: PIANO_NOTE_RELEASE,
-        urls: buildToneSamplerUrls(),
-        volume: PIANO_OUTPUT_VOLUME_DB,
+        urls: Object.fromEntries(PIANO_SAMPLE_ROOTS.map((root) => [
+          root, midiToSampleNote(root) + 'v' + PIANO_SAMPLE_VELOCITY + '.mp3',
+        ])),
       });
       const filter = new Tone.Filter({
         frequency: PIANO_LOWPASS_CUTOFF_HZ,
@@ -256,34 +259,14 @@
       });
       const masterGain = new Tone.Gain(PIANO_MASTER_GAIN);
 
-      piano = { sampler, filter, compressor, masterGain };
-      sampler.chain(filter, compressor, masterGain, Tone.Destination);
+      piano = { buffers, filter, compressor, masterGain };
+      filter.chain(compressor, masterGain, Tone.Destination);
     }).catch((e) => {
       tonePianoPromise = null;
       throw e;
     });
 
     return await tonePianoPromise;
-  }
-
-  function shouldWarmPiano() {
-    const c = navigator.connection;
-    if (!c) return true;
-    if (c.saveData) return false;
-    return c.effectiveType !== 'slow-2g' && c.effectiveType !== '2g';
-  }
-
-  function warmPianoSoon() {
-    if (!shouldWarmPiano()) return;
-    const warm = () => {
-      ensureTonePiano({ resumeCtx: false }).catch(() => {});
-    };
-
-    if (typeof window.requestIdleCallback === 'function') {
-      window.requestIdleCallback(warm, { timeout: 1800 });
-    } else {
-      window.setTimeout(warm, 600);
-    }
   }
 
   function clamp(v, a, b) {
@@ -341,9 +324,12 @@
     return 0;
   }
 
-  async function loadArrayBuffer(url) {
-    const r = await fetch(url);
+  async function loadArrayBuffer(url, signal) {
+    const r = await fetch(url, { signal });
     if (!r.ok) throw new Error('Fetch failed: ' + r.status);
+    if (Number(r.headers.get('content-length')) > MAX_MIDI_BYTES) {
+      throw new Error('Choose a MIDI file smaller than 20 MB.');
+    }
     return await r.arrayBuffer();
   }
 
@@ -430,10 +416,6 @@
     });
 
     return Array.from(channels.values()).sort((a, b) => a.channel - b.channel);
-  }
-
-  function activeChannelCount(channelMetas) {
-    return channelMetas.filter((meta) => meta.noteCount > 0).length;
   }
 
   function isPianoFamilyInstrument(instrument) {
@@ -610,7 +592,9 @@
     });
 
     segmentsByChannel.forEach((eventTracks, channel) => {
-      segmentsByChannel.set(channel, segmentsFromPedalEvents(eventTracks, duration));
+      // Controllers apply to a channel, even when stored in separate tracks.
+      const events = eventTracks.flat().sort((a, b) => a.time - b.time);
+      segmentsByChannel.set(channel, segmentsFromPedalEvents([events], duration));
     });
 
     return segmentsByChannel;
@@ -641,7 +625,7 @@
     return noteEnd;
   }
 
-  function buildPlaybackNotes(notes, sustainSegmentsByChannel) {
+  function buildPlaybackNotes(notes, sustainSegmentsByChannel, sostenutoSegmentsByChannel) {
     const nextStartByPitch = new Map();
     const playbackNotes = new Array(notes.length);
 
@@ -649,10 +633,19 @@
       const n = notes[i];
       const noteEnd = n.time + n.duration;
       const sustainSegments = sustainSegmentsByChannel.get(n.channel) || [];
-      const sustainedEnd = sustainedEndForNote(noteEnd, sustainSegments);
+      const sostenutoSegments = sostenutoSegmentsByChannel.get(n.channel) || [];
+      let heldEnd = noteEnd;
+      if (!n.percussion) {
+        sostenutoSegments.forEach((segment) => {
+          if (n.time <= segment.time && noteEnd > segment.time) {
+            heldEnd = Math.max(heldEnd, segmentEnd(segment));
+          }
+        });
+        heldEnd = sustainedEndForNote(heldEnd, sustainSegments);
+      }
       const pitchKey = n.partKey + ':' + n.midi;
       const nextStart = nextStartByPitch.get(pitchKey);
-      let playbackEnd = sustainedEnd;
+      let playbackEnd = heldEnd;
 
       if (Number.isFinite(nextStart) && nextStart > n.time) {
         playbackEnd = Math.min(playbackEnd, Math.max(n.time + 0.03, nextStart));
@@ -764,20 +757,6 @@
       });
 
     const promise = loadInstrument(name)
-      .catch((error) => {
-        if (name === SOUNDFONT_FALLBACK_INSTRUMENT) throw error;
-
-        console.warn(
-          'KML soundfont failed to load ' +
-            name +
-            '; using ' +
-            SOUNDFONT_FALLBACK_INSTRUMENT +
-            ' instead.',
-          error
-        );
-
-        return loadInstrument(SOUNDFONT_FALLBACK_INSTRUMENT);
-      })
       .then((player) => {
         soundfontPlayers.set(key, player);
         soundfontPromises.delete(key);
@@ -817,16 +796,6 @@
       context: ac,
       players: playersByName,
     };
-  }
-
-  function stopSoundfontPlayback(state, when) {
-    if (!state || !state.players) return;
-
-    state.players.forEach((player) => {
-      try {
-        if (player && typeof player.stop === 'function') player.stop(when);
-      } catch (e) {}
-    });
   }
 
   function audioBufferFromToneBuffer(buffer) {
@@ -1094,8 +1063,7 @@
   }
 
   function initRoll(el) {
-    const url = el.getAttribute('data-midi-url');
-    if (!url) return;
+    let url = el.getAttribute('data-midi-url') || '';
 
     const canvas = el.querySelector('.kml-canvas');
     const playBtn = el.querySelector('.kml-play');
@@ -1122,6 +1090,77 @@
     const renderStatus = document.createElement('span');
     const renderProgress = document.createElement('div');
     const renderProgressFill = document.createElement('span');
+    const status = document.createElement('p');
+    status.className = 'kml-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    status.setAttribute('aria-atomic', 'true');
+    const summary = document.createElement('div');
+    summary.className = 'kml-file-summary';
+    const fileTitle = document.createElement('strong');
+    fileTitle.className = 'kml-file-title';
+    const fileDetails = document.createElement('span');
+    fileDetails.className = 'kml-file-details';
+    summary.append(fileTitle, fileDetails);
+    el.insertBefore(summary, controls);
+    el.insertBefore(status, controls);
+
+    const soundLabel = document.createElement('label');
+    soundLabel.className = 'kml-label';
+    soundLabel.textContent = 'Sound ';
+    const soundMode = document.createElement('select');
+    soundMode.className = 'kml-sound-mode';
+    [['piano', 'Piano sound'], ['soundfont', "File’s instruments"]].forEach(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      soundMode.appendChild(option);
+    });
+    soundLabel.appendChild(soundMode);
+    controls.appendChild(soundLabel);
+
+    const navigation = document.createElement('div');
+    navigation.className = 'kml-navigation';
+    const seekLabel = document.createElement('label');
+    seekLabel.textContent = 'Position ';
+    const seek = document.createElement('input');
+    seek.className = 'kml-seek';
+    seek.type = 'range';
+    seek.min = '0';
+    seek.max = '0';
+    seek.step = '0.01';
+    seek.value = '0';
+    seek.setAttribute('aria-label', 'Playback position');
+    seekLabel.appendChild(seek);
+    const loopControls = document.createElement('div');
+    loopControls.className = 'kml-loop-controls';
+    const loopButton = (className, text) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'kml-btn ' + className;
+      button.textContent = text;
+      loopControls.appendChild(button);
+      return button;
+    };
+    const loopAButton = loopButton('kml-loop-a', 'Set A');
+    const loopBButton = loopButton('kml-loop-b', 'Set B');
+    const loopLabel = document.createElement('label');
+    const loopToggle = document.createElement('input');
+    loopToggle.className = 'kml-loop-toggle';
+    loopToggle.type = 'checkbox';
+    loopLabel.append(loopToggle, document.createTextNode(' Loop A–B'));
+    loopControls.appendChild(loopLabel);
+    const loopClear = loopButton('kml-loop-clear', 'Clear loop');
+    const loopReadout = document.createElement('span');
+    loopReadout.className = 'kml-loop-readout';
+    loopReadout.setAttribute('aria-live', 'polite');
+    loopControls.appendChild(loopReadout);
+    navigation.append(seekLabel, loopControls);
+    canvas.insertAdjacentElement('beforebegin', navigation);
+    const previewNote = document.createElement('p');
+    previewNote.className = 'kml-preview-note';
+    previewNote.textContent = 'Preview: sustain and sostenuto are reproduced as on/off pedals. Soft pedal is shown only. Half-pedaling, pitch bend, expression and SysEx are not reproduced; percussion uses an approximate drum sound. Piano sound also enables WAV export of the full piece.';
+    canvas.insertAdjacentElement('afterend', previewNote);
 
     channelKey.className = 'kml-channel-key';
     channelKey.hidden = true;
@@ -1202,12 +1241,18 @@
     let activeRender = null;
     let activeSoundfont = null;
     let playbackRequestId = 0;
-    let tempoDebounce = null;
+    let loadRequestId = 0;
+    let loadController = null;
+    let loopA = null;
+    let loopB = null;
+    let loopEnabled = false;
+    const pianoVoices = new Set();
+    const soundfontVoices = new Set();
     const mutedChannels = new Set();
 
-    function setStatus(msg) {
-      // Keep this subtle; time text will overwrite during draw
-      timeEl.textContent = msg;
+    function setStatus(msg, kind) {
+      status.textContent = msg;
+      status.dataset.kind = kind || 'ready';
     }
 
     function setActionButtonLabel(button, iconText, labelText) {
@@ -1267,7 +1312,7 @@
     function refreshRenderAvailability() {
       renderBtn.disabled = activeRender ? false : !canRenderAudio();
       if (audioMode === 'soundfont' && playbackNotes.length) {
-        setRenderStatus('WAV render unavailable for multichannel playback');
+        setRenderStatus('Choose Piano sound to create a WAV of the full piece.');
       } else if (audioMode === 'piano') {
         setRenderStatus('');
       }
@@ -1315,12 +1360,8 @@
     }
 
     function chooseAudioMode() {
-      if (activeChannelCount(channelMetas) <= 1) return 'piano';
       if (allActiveChannelsArePiano(channelMetas)) return 'piano';
-      if (canUseSoundfont()) return 'soundfont';
-
-      console.warn('KML soundfont player is unavailable; using piano playback for multichannel MIDI.');
-      return 'piano';
+      return 'soundfont';
     }
 
     function stopRenderProgressTimer() {
@@ -1387,6 +1428,12 @@
       tempo.disabled = locked || !midi;
       zoom.disabled = locked || !midi;
       if (volume) volume.disabled = locked || !midi;
+      soundMode.disabled = locked || !midi;
+      seek.disabled = locked || !midi;
+      loopAButton.disabled = locked || !midi;
+      loopBButton.disabled = locked || !midi;
+      loopClear.disabled = locked || !midi;
+      loopToggle.disabled = locked || !midi || loopA === null || loopB === null;
       channelKey.querySelectorAll('.kml-channel-key-item').forEach((button) => {
         button.disabled = locked || !midi;
       });
@@ -1493,6 +1540,41 @@
       return clamp(t, 0, durTotal);
     }
 
+    function updateNavigation() {
+      const t = currentT();
+      seek.max = String(durTotal);
+      seek.value = String(t);
+      seek.setAttribute('aria-valuetext', fmtTime(t) + ' of ' + fmtTime(durTotal));
+      timeEl.textContent = fmtTime(t) + ' / ' + fmtTime(durTotal);
+    }
+
+    function updateLoop() {
+      loopToggle.checked = loopEnabled;
+      loopToggle.disabled = !midi || !!activeRender || loopA === null || loopB === null;
+      const mark = (t) => t === null ? '—' : fmtTime(t) + '.' + Math.floor((t % 1) * 10);
+      loopReadout.textContent = 'A ' + mark(loopA) + ' · B ' + mark(loopB);
+    }
+
+    function seekTo(position) {
+      if (!midi || activeRender) return;
+      const playing = isPlaying;
+      cancelScheduled();
+      startAt = clamp(Number(position) || 0, 0, durTotal);
+      if (loopEnabled && (startAt < loopA || startAt >= loopB)) {
+        loopEnabled = false;
+        updateLoop();
+      }
+      startPerf = performance.now();
+      if (playing) {
+        resetScheduleIndex();
+        schedulePlaybackWindow();
+        if (isPlaying && !scheduleTimer) {
+          scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+        }
+      }
+      updateNavigation();
+    }
+
     function cancelScheduled() {
       if (scheduleTimer) {
         window.clearInterval(scheduleTimer);
@@ -1501,21 +1583,27 @@
 
       nextNoteIndex = 0;
 
-      try {
-        if (
-          activePiano &&
-          activePiano.sampler &&
-          typeof activePiano.sampler.releaseAll === 'function'
-        ) {
-          activePiano.sampler.releaseAll(Tone.now());
-        }
-      } catch (e) {}
+      // Keep every voice until it ends. Sampler.triggerRelease drops its reference
+      // immediately, making already scheduled releases impossible to cancel.
+      pianoVoices.forEach((voice) => {
+        try {
+          // Replace a distant release timer as well as disconnecting the voice.
+          voice.fadeOut = 0;
+          voice.stop(typeof Tone.immediate === 'function' ? Tone.immediate() : Tone.now());
+        } catch (e) {}
+        try { voice.dispose(); } catch (e) {}
+      });
+      pianoVoices.clear();
 
-      try {
-        if (activeSoundfont && activeSoundfont.context) {
-          stopSoundfontPlayback(activeSoundfont, activeSoundfont.context.currentTime);
-        }
-      } catch (e) {}
+      soundfontVoices.forEach(({ node }) => {
+        try {
+          node.stop(activeSoundfont.context.currentTime);
+          // The public play() API returns an AudioNode; disconnect also silences
+          // its release tail and any future attack after a seek or mute.
+          if (typeof node.disconnect === 'function') node.disconnect();
+        } catch (e) {}
+      });
+      soundfontVoices.clear();
     }
 
     function restartPlaybackAtCurrentTime() {
@@ -1526,7 +1614,9 @@
       startPerf = performance.now();
       resetScheduleIndex();
       schedulePlaybackWindow();
-      scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+      if (isPlaying && !scheduleTimer) {
+        scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+      }
     }
 
     function toggleChannelMute(channel) {
@@ -1549,26 +1639,33 @@
 
       while (nextNoteIndex < playbackNotes.length) {
         const n = playbackNotes[nextNoteIndex];
-        if (n.time + n.duration > startAt) break;
+        if (n.time + n.playbackDuration > startAt) break;
         nextNoteIndex++;
       }
     }
 
     function scheduleToneNote(n, tNow, toneNow) {
-      if (!activePiano || !activePiano.sampler) return;
+      if (!activePiano || !activePiano.buffers) return;
       if (!Number.isFinite(n.midi) || n.midi < 0 || n.midi > 127) return;
 
-      const end = n.time + n.playbackDuration;
-      const struckEnd = n.time + n.duration;
-      if (end <= tNow || struckEnd <= tNow) return;
+      const end = Math.min(n.time + n.playbackDuration, loopEnabled ? loopB : durTotal);
+      if (end <= tNow) return;
 
-      const noteName = midiToToneNote(n.midi);
       const audibleStart = Math.max(n.time, tNow);
       const when = toneNow + Math.max(0, (audibleStart - tNow) / tempoScale);
-      const releaseAt = toneNow + Math.max(0.03, (end - tNow) / tempoScale);
-
-      activePiano.sampler.triggerAttack(noteName, when, toneVelocity(n));
-      activePiano.sampler.triggerRelease(noteName, releaseAt);
+      const duration = Math.max(0.001, (end - audibleStart) / tempoScale);
+      const root = PIANO_SAMPLE_ROOTS.reduce((best, pitch) =>
+        Math.abs(pitch - n.midi) < Math.abs(best - n.midi) ? pitch : best);
+      const voice = new Tone.ToneBufferSource({
+        url: activePiano.buffers.get(root),
+        curve: 'exponential',
+        fadeIn: PIANO_NOTE_ATTACK,
+        fadeOut: loopEnabled ? 0 : PIANO_NOTE_RELEASE,
+        playbackRate: Math.pow(2, (n.midi - root) / 12),
+        onended: () => { pianoVoices.delete(voice); voice.dispose(); },
+      }).connect(activePiano.filter);
+      pianoVoices.add(voice);
+      voice.start(when, 0, duration, toneVelocity(n) * Math.pow(10, PIANO_OUTPUT_VOLUME_DB / 20));
     }
 
     function scheduleSoundfontNote(n, tNow, audioNow) {
@@ -1578,18 +1675,21 @@
       const player = activeSoundfont.players.get(n.soundfontName);
       if (!player || typeof player.play !== 'function') return;
 
-      const end = n.time + n.playbackDuration;
-      const struckEnd = n.time + n.duration;
-      if (end <= tNow || struckEnd <= tNow) return;
+      const end = Math.min(n.time + n.playbackDuration, loopEnabled ? loopB : durTotal);
+      if (end <= tNow) return;
 
       const audibleStart = Math.max(n.time, tNow);
       const when = audioNow + Math.max(0, (audibleStart - tNow) / tempoScale);
-      const duration = Math.max(0.03, (end - audibleStart) / tempoScale);
+      const duration = Math.max(0.001, (end - audibleStart) / tempoScale);
 
-      player.play(midiToToneNote(clamp(Math.round(n.midi), 0, 127)), when, {
+      const node = player.play(midiToToneNote(clamp(Math.round(n.midi), 0, 127)), when, {
         gain: toneVelocity(n),
         duration,
+        // An explicit ADSR is required: soundfont-player treats release: 0 as
+        // missing and otherwise falls back to its default release tail.
+        adsr: [0.01, 0.1, 0.9, loopEnabled ? 0 : 0.1],
       });
+      if (node) soundfontVoices.add({ node, end: when + duration + 0.1 });
     }
 
     function schedulePlaybackWindow() {
@@ -1597,16 +1697,40 @@
       if (audioMode === 'soundfont' && !activeSoundfont) return;
       if (audioMode !== 'soundfont' && !activePiano) return;
 
-      const tNow = currentT();
+      let tNow = currentT();
+      if (loopEnabled && tNow >= loopB) {
+        const overshoot = (tNow - loopB) % (loopB - loopA);
+        cancelScheduled();
+        startAt = loopA + overshoot;
+        startPerf = performance.now();
+        resetScheduleIndex();
+        tNow = startAt;
+        if (isPlaying && !scheduleTimer) {
+          scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+        }
+      } else if (!loopEnabled && tNow >= durTotal) {
+        // Let the last notes' already scheduled release tails finish naturally.
+        if (scheduleTimer) window.clearInterval(scheduleTimer);
+        scheduleTimer = null;
+        isPlaying = false;
+        startAt = durTotal;
+        setPlayButtonMode('play');
+        updateNavigation();
+        setStatus('Finished. Press Play to start again.');
+        return;
+      }
       const audioNow =
         audioMode === 'soundfont' && activeSoundfont.context
           ? activeSoundfont.context.currentTime
-          : Tone.now();
-      const windowEnd = Math.min(durTotal, tNow + NOTE_SCHEDULE_LOOKAHEAD * tempoScale);
+          : (typeof Tone.immediate === 'function' ? Tone.immediate() : Tone.now());
+      soundfontVoices.forEach((voice) => {
+        if (voice.end < audioNow) soundfontVoices.delete(voice);
+      });
+      const windowEnd = Math.min(loopEnabled ? loopB : durTotal, tNow + NOTE_SCHEDULE_LOOKAHEAD * tempoScale);
 
       while (nextNoteIndex < playbackNotes.length) {
         const n = playbackNotes[nextNoteIndex];
-        if (n.time > windowEnd) break;
+        if (n.time > windowEnd || (loopEnabled && n.time >= loopB)) break;
 
         if (isChannelMuted(n.channel)) {
           nextNoteIndex++;
@@ -1627,10 +1751,6 @@
 
     function cancelPendingPlaybackStart() {
       playbackRequestId += 1;
-      if (tempoDebounce !== null) {
-        window.clearTimeout(tempoDebounce);
-        tempoDebounce = null;
-      }
     }
 
     function isCurrentPlaybackRequest(requestId) {
@@ -1646,20 +1766,10 @@
       let soundfont = null;
 
       if (audioMode === 'soundfont') {
-        try {
-          setStatus('Loading instruments...');
-          soundfont = await ensureSoundfontPlayback(playbackNotes);
-        } catch (error) {
-          if (!isCurrentPlaybackRequest(requestId)) return false;
-          console.warn('KML soundfont playback failed; falling back to piano playback.', error);
-          audioMode = 'piano';
-          refreshRenderAvailability();
-          renderBtn.disabled = true;
-          setStatus('Loading piano...');
-          piano = await ensureTonePiano({ resumeCtx: true });
-        }
+        setStatus('Loading instruments...', 'loading');
+        soundfont = await ensureSoundfontPlayback(playbackNotes);
       } else {
-        setStatus('Loading piano...');
+        setStatus('Loading piano...', 'loading');
         piano = await ensureTonePiano({ resumeCtx: true });
       }
 
@@ -1671,11 +1781,16 @@
       activePiano = piano;
       activeSoundfont = soundfont;
       applyPlaybackVolume();
+      if (loopEnabled && (startAt < loopA || startAt >= loopB)) startAt = loopA;
+      else if (startAt >= durTotal) startAt = 0;
       isPlaying = true;
       startPerf = performance.now();
       resetScheduleIndex();
       schedulePlaybackWindow();
-      scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+      if (isPlaying && !scheduleTimer) {
+        scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
+      }
+      setStatus('Playing.');
       return true;
     }
 
@@ -1684,6 +1799,7 @@
       cancelScheduled();
       isPlaying = false;
       startAt = t;
+      updateNavigation();
     }
 
     function stop() {
@@ -1691,6 +1807,7 @@
       cancelScheduled();
       isPlaying = false;
       startAt = 0;
+      updateNavigation();
     }
 
     // Smooth drawing loop (independent of audio scheduling)
@@ -1832,13 +1949,7 @@
       ctx.stroke();
 
       // Time label
-      timeEl.textContent = fmtTime(tNow) + ' / ' + fmtTime(durTotal);
-
-      // Auto-finish when reaching end
-      if (isPlaying && tNow >= durTotal - 0.01) {
-        stop();
-        setPlayButtonMode('play');
-      }
+      updateNavigation();
 
       requestAnimationFrame(draw);
     }
@@ -1850,6 +1961,7 @@
       if (isPlaying) {
         pause();
         setPlayButtonMode('play');
+        setStatus('Paused.');
         return;
       }
 
@@ -1866,7 +1978,9 @@
         if (!isCurrentPlaybackRequest(requestId)) return;
         console.error('KML piano roll failed during play:', e);
         stop();
-        setStatus('Play failed');
+        setStatus(audioMode === 'soundfont'
+          ? 'Could not load the file’s instruments. Try Piano sound or press Play to retry.'
+          : 'Could not load the piano sound. Press Play to retry.', 'error');
         setPlayButtonMode('play');
         playBtn.disabled = false;
         stopBtn.disabled = false;
@@ -1885,50 +1999,65 @@
       playBtn.disabled = !midi;
       stopBtn.disabled = !midi;
       renderBtn.disabled = !canRenderAudio();
+      setStatus('Stopped.');
     });
 
-    // Debounce tempo changes so we do not restart 60 times/sec while dragging
     tempo.addEventListener('input', () => {
+      // Read the old clock before changing its rate.
+      const position = currentT();
       clearRenderedAudio('');
       setTempoScale();
-      const shouldRestart = isPlaying || tempoDebounce !== null;
-      if (!shouldRestart) return;
+      seekTo(position);
+      refreshRenderAvailability();
+    });
 
-      if (isPlaying) {
-        const t = currentT();
-        pause();
-        startAt = t;
+    seek.addEventListener('input', () => seekTo(seek.value));
+    loopAButton.addEventListener('click', () => {
+      loopA = currentT();
+      if (loopB !== null && loopB - loopA < 0.1) loopB = null;
+      loopEnabled = false;
+      updateLoop();
+      restartPlaybackAtCurrentTime();
+      setStatus('A set. Seek to the passage end, then set B.');
+    });
+    loopBButton.addEventListener('click', () => {
+      const end = currentT();
+      if (loopA === null || end - loopA < 0.1) {
+        setStatus('Set A first, then set B at least 0.1 seconds after A.', 'error');
+        return;
       }
-
-      if (tempoDebounce !== null) window.clearTimeout(tempoDebounce);
-      playbackRequestId += 1;
-      playBtn.disabled = true;
-      renderBtn.disabled = true;
-      setPlayButtonMode('loading');
-
-      tempoDebounce = window.setTimeout(async () => {
-        tempoDebounce = null;
-        const requestId = beginPlaybackRequest();
-
-        try {
-          const started = await play(requestId);
-          if (!started) return;
-          setPlayButtonMode('pause');
-        } catch (e) {
-          if (!isCurrentPlaybackRequest(requestId)) return;
-          console.error('KML tempo restart failed:', e);
-          stop();
-          setPlayButtonMode('play');
-          playBtn.disabled = false;
-          stopBtn.disabled = false;
-          renderBtn.disabled = !canRenderAudio();
-        } finally {
-          if (isCurrentPlaybackRequest(requestId)) {
-            playBtn.disabled = false;
-            renderBtn.disabled = !canRenderAudio();
-          }
-        }
-      }, 120);
+      loopB = end;
+      loopEnabled = true;
+      updateLoop();
+      seekTo(loopA);
+      setStatus('Loop ready. Playback repeats from A to B.');
+    });
+    loopToggle.addEventListener('change', () => {
+      loopEnabled = loopToggle.checked && loopA !== null && loopB !== null;
+      updateLoop();
+      const position = currentT();
+      seekTo(loopEnabled && (position < loopA || position >= loopB) ? loopA : position);
+    });
+    loopClear.addEventListener('click', () => {
+      loopEnabled = false;
+      loopA = null;
+      loopB = null;
+      updateLoop();
+      restartPlaybackAtCurrentTime();
+      setStatus('Loop cleared.');
+    });
+    soundMode.addEventListener('change', () => {
+      cancelPendingPlaybackStart();
+      if (isPlaying) pause();
+      else cancelScheduled();
+      audioMode = soundMode.value;
+      activePiano = null;
+      activeSoundfont = null;
+      clearRenderedAudio('');
+      setPlayButtonMode('play');
+      setRenderControlLock(false);
+      refreshRenderAvailability();
+      setStatus('Sound changed. Press Play to continue from this position.');
     });
 
     zoom.addEventListener('input', () => setZoom());
@@ -2019,58 +2148,110 @@
     });
 
     window.addEventListener('pagehide', () => {
+      loadRequestId += 1;
+      if (loadController) loadController.abort();
       stop();
       cancelActiveRender('');
       clearRenderedAudio('');
+      setPlayButtonMode('play');
+      setRenderControlLock(false);
     });
 
-    // ---- Load MIDI and start drawing ----
-    (async () => {
+    // Local files and archive URLs share parsing, but only archive URLs use fetch.
+    async function loadMidi(read, sourceName, sourceUrl, preferredTitle) {
+      const requestId = ++loadRequestId;
+      if (loadController) loadController.abort();
+      loadController = new AbortController();
+      stop();
+      cancelActiveRender('');
+      setRenderControlLock(true);
+      renderBtn.disabled = true;
+      setPlayButtonMode('loading');
+      setStatus('Reading MIDI...', 'loading');
       try {
-        playBtn.disabled = true;
-        setPlayButtonMode('loading');
-        setZoom();
-        setTempoScale();
-        setVolume();
+        const buf = await read(loadController.signal);
+        if (requestId !== loadRequestId) return false;
+        if (buf.byteLength > MAX_MIDI_BYTES) throw new Error('Choose a MIDI file smaller than 20 MB.');
+        const header = new DataView(buf);
+        if (buf.byteLength < 14 || header.getUint32(0) !== 0x4d546864) {
+          throw new Error('This is not a standard MIDI file. Choose a .mid or .midi file.');
+        }
+        if (header.getUint16(8) > 1 || (header.getUint16(12) & 0x8000)) {
+          throw new Error('This preview supports MIDI format 0 or 1 with musical tick timing.');
+        }
+        const parsed = new Midi(buf);
+        const parsedNotes = collectNotes(parsed);
+        if (!parsedNotes.length) throw new Error('This MIDI file contains no playable notes.');
+        if (parsedNotes.some((n) => !Number.isFinite(n.time) || n.time < 0 ||
+          !Number.isFinite(n.duration) || n.duration < 0 || !Number.isFinite(n.midi))) {
+          throw new Error('This MIDI file contains invalid note timing.');
+        }
+        const pedalEvents = collectPedalEvents(parsed);
+        const duration = Math.max(parsed.duration || 0, noteEndTime(parsedNotes), lastPedalEventTime(pedalEvents));
+        if (!Number.isFinite(duration) || duration <= 0) throw new Error('This MIDI file has no playable duration.');
+        const sustain = buildPedalSegmentsByChannel(pedalEvents, SUSTAIN_CC, duration);
+        const sostenuto = buildPedalSegmentsByChannel(pedalEvents, 66, duration);
+        const parsedPlaybackNotes = buildPlaybackNotes(parsedNotes, sustain, sostenuto);
 
-        const buf = await loadArrayBuffer(url);
-        midi = new Midi(buf);
-        notes = collectNotes(midi);
+        // Commit only after successful parsing; a bad replacement keeps the previous piece.
+        midi = parsed;
+        notes = parsedNotes;
+        playbackNotes = parsedPlaybackNotes;
+        durTotal = Math.max(duration, noteEndTime(playbackNotes, 'playbackDuration'));
+        pedalLanes = buildPedalSegments(pedalEvents, durTotal);
         channelMetas = collectChannelMetas(notes);
+        mutedChannels.clear();
         updateChannelKey();
         audioMode = chooseAudioMode();
-
-        const pedalEvents = collectPedalEvents(midi);
-        const sustainSegmentsByChannel = buildPedalSegmentsByChannel(
-          pedalEvents,
-          SUSTAIN_CC,
-          Math.max(midi.duration || 0, noteEndTime(notes), lastPedalEventTime(pedalEvents))
-        );
-
-        durTotal = Math.max(midi.duration || 0, noteEndTime(notes), lastPedalEventTime(pedalEvents));
-        pedalLanes = buildPedalSegments(pedalEvents, durTotal);
-        playbackNotes = buildPlaybackNotes(notes, sustainSegmentsByChannel);
-        durTotal = Math.max(durTotal, noteEndTime(playbackNotes, 'playbackDuration'));
-
-        playBtn.disabled = false;
-        stopBtn.disabled = false;
-        setPlayButtonMode('play');
-        refreshRenderAvailability();
-
-        if (audioMode === 'piano') warmPianoSoon();
-
-        requestAnimationFrame(draw);
-      } catch (e) {
-        console.error('KML piano roll failed:', e);
-        setStatus('Preview unavailable');
-        setPlayButtonMode('play');
-        playBtn.setAttribute('aria-label', 'MIDI playback unavailable');
-        playBtn.title = 'MIDI playback unavailable';
-        playBtn.disabled = true;
-        stopBtn.disabled = true;
-        renderBtn.disabled = true;
+        soundMode.value = audioMode;
+        activePiano = null;
+        activeSoundfont = null;
+        url = sourceUrl || sourceName;
+        clearRenderedAudio('');
+        loopA = null;
+        loopB = null;
+        loopEnabled = false;
+        updateLoop();
+        fileTitle.textContent = preferredTitle || (midi.header.name || '').trim() || sourceName || 'MIDI file';
+        fileDetails.textContent = ' · ' + fmtTime(durTotal) + ' · ' + notes.length.toLocaleString() + ' notes';
+        downloadAudio.download = audioDownloadFilename(url, el);
+        setStatus('Ready. Press Play.');
+        updateNavigation();
+        return true;
+      } catch (error) {
+        if (requestId !== loadRequestId) return false;
+        console.error('KML MIDI load failed:', error);
+        setStatus((error instanceof Error ? error.message : 'Could not read this MIDI file.') +
+          (midi ? ' The previous piece is still available.' : ''), 'error');
+        return false;
+      } finally {
+        if (requestId === loadRequestId) {
+          setPlayButtonMode('play');
+          setRenderControlLock(false);
+          refreshRenderAvailability();
+        }
       }
-    })();
+    }
+
+    el.kmlLoadFile = (file) => loadMidi(async () => {
+      if (!file || !/\.midi?$/i.test(file.name)) throw new Error('Choose a .mid or .midi file.');
+      if (file.size > MAX_MIDI_BYTES) throw new Error('Choose a MIDI file smaller than 20 MB.');
+      return await file.arrayBuffer();
+    }, file && file.name, '');
+    el.kmlLoadUrl = (sourceUrl, title) => loadMidi(
+      (signal) => loadArrayBuffer(sourceUrl, signal), basenameFromUrl(sourceUrl), sourceUrl, title
+    );
+    setZoom();
+    setTempoScale();
+    setVolume();
+    setRenderControlLock(false);
+    setPlayButtonMode('play');
+    updateLoop();
+    setStatus('Choose a MIDI file or try the demo.');
+    requestAnimationFrame(draw);
+    if (url) el.kmlLoadUrl(url, el.getAttribute('data-midi-title') || '');
+    el.dispatchEvent(new CustomEvent('kml-ready'));
+
   }
 
   function init() {

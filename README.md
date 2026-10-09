@@ -20,8 +20,8 @@ Source: [https://github.com/diskchord/kuhmann-midi-library](https://github.com/d
 - Adds meaningful meta descriptions and generated page summaries for archive, folder, and single MIDI download pages.
 - Integrates descriptions, MIDI-specific titles, and linked file/breadcrumb structured data with Yoast SEO, with standalone metadata when no SEO plugin is active.
 - Adds a beta browser playback / piano-roll view when a public file URL is configured.
-- Includes `[kml_library]` for embedding a browsable library and `[kml_midi_player]` for a standalone upload/playback tool.
-- Supports temporary public MIDI uploads for the standalone player, purged nightly at midnight.
+- Includes `[kml_library]` for embedding a browsable library and `[kml_midi_player]` for a standalone local-file player.
+- Reads chosen or dropped MIDI files directly in the browser, without uploading them or submitting the page.
 - Supports WP-Cron indexing and WP-CLI indexing/status commands.
 
 ## Requirements
@@ -111,15 +111,21 @@ Set the number of files shown per page:
 [kml_library per_page="100"]
 ```
 
-Render a standalone MIDI player with upload support:
+Render a standalone MIDI player with local file selection and drag-and-drop support:
 
 ```text
 [kml_midi_player]
 ```
 
-When no MIDI source or upload is provided, the player loads a bundled piano chromatic scale (C4 to C5 and back), ready to play. A supplied `src` or uploaded MIDI file takes precedence over this default.
+Choose a `.mid` or `.midi` file, or drag one onto the player, to parse it immediately and display its title, duration, note count, and piano roll. Press **Play** when ready. There is no separate Load step, page submission, or server copy: your MIDI file stays on your device. Browser scripts and instrument samples may still load over the network; local MIDI contents are not sent with those requests.
 
-Uploaded files are stored in a public temporary uploads folder and are purged every night at midnight. The upload option is only rendered by this standalone player shortcode; individual indexed MIDI pages do not show it.
+**Try a demo** loads a 38.4-second excerpt of [“Cloud Whisper” by Bennie Gunn](https://www.alexanderpeppe.com/midi/04-cloud-whisper-bennie-gunn-ce57643e/) from the archive, with electric piano, jazz guitar, vibraphone, fretless bass, and drums. The excerpt is bundled with the plugin so it does not depend on a particular archive URL at playback time. Nothing plays until the visitor presses Play.
+
+The seek slider moves directly to a passage. Set **A**, seek to the end of the passage, then set **B** to enable the loop; press Play if playback is paused. Seeking outside the loop disables it. Choose **Piano sound** or **File's instruments** explicitly; changing tempo preserves the current musical position. Changing sound pauses at the current position. Loading progress and errors have a persistent message area separate from the playback clock.
+
+This is a musical preview: sustain (CC64) and sostenuto (CC66) extend sounding notes, including when seeking into a held note. Soft pedal is visualized only. Half-pedaling, pitch bend, expression, and SysEx effects are not reproduced, and percussion uses approximate synthesized drums. **Piano sound** enables WAV export of the full piece; A–B loop boundaries do not trim the export.
+
+The legacy `upload` shortcode attribute now controls the local file picker. `upload="0"` hides it and disables file dropping; individual indexed MIDI pages also omit the picker. Uploads from older plugin versions still expire through the existing nightly cleanup, but the player no longer accepts new server uploads or `kml_uploaded_midi` URLs.
 
 Render a standalone player for a specific public MIDI URL or root-relative path:
 
@@ -188,9 +194,19 @@ Run the dependency-free SEO regression checks with `php tests/seo.php`, `php tes
 
 Run listing and sitemap exclusion checks with `php tests/availability.php`.
 
+Run local player markup and retired-upload checks with `php tests/player-shortcode.php`.
+
+Run browser player regressions with `sh tests/player-browser.sh` (requires Chromium; set `CHROMIUM` to another executable path). Use `KML_VIEWPORT=390,1200 sh tests/player-browser.sh` for a mobile viewport. These tests use the real browser DOM, File API, and bundled MIDI parser with deterministic clock and audio-output stubs; they check local reading, navigation, scheduling, errors, and layout, not audible sample quality.
+
 This repository intentionally excludes MIDI libraries and other large/generated artifacts. Keep MIDI source folders outside the plugin directory, or ensure they remain ignored by git.
 
 ## Changelog
+
+### Unreleased
+
+- Replaced public file uploads and the Load step with immediate browser-local file selection and dropping.
+- Added a multiinstrument “Cloud Whisper” demo excerpt, seeking, A–B looping, and an explicit sound choice.
+- Preserved musical position when changing tempo and separated player messages from the playback clock.
 
 ### 0.1.13
 

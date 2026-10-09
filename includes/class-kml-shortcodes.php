@@ -55,75 +55,39 @@ final class KML_Shortcodes {
 
 		$file_url = '';
 		$filename = '';
-		$message = '';
-		$message_class = 'kml-upload-message';
-
-		if ( self::is_player_upload_request() ) {
-			if ( ! isset( $_POST['kml_midi_player_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['kml_midi_player_nonce'] ) ), 'kml_midi_player_upload' ) ) {
-				$message = __( 'The upload could not be verified. Please try again.', 'kuhmann-midi-library' );
-				$message_class .= ' kml-upload-error';
-			} else {
-				$upload = isset( $_FILES['kml_midi_file'] ) && is_array( $_FILES['kml_midi_file'] )
-					? KML_Public::save_player_upload( $_FILES['kml_midi_file'] )
-					: KML_Public::get_uploaded_player_file( '' );
-
-				if ( ! empty( $upload['found'] ) ) {
-					$file_url = (string) $upload['file_url'];
-					$filename = (string) $upload['filename'];
-					$message = __( 'Loaded MIDI file.', 'kuhmann-midi-library' );
-					$message_class .= ' kml-upload-success';
-				} else {
-					$message = ! empty( $upload['error'] ) ? (string) $upload['error'] : __( 'The MIDI file could not be uploaded.', 'kuhmann-midi-library' );
-					$message_class .= ' kml-upload-error';
-				}
-			}
-		}
-
-		if ( '' === $file_url && isset( $_GET['kml_uploaded_midi'] ) ) {
-			$uploaded = KML_Public::get_uploaded_player_file( sanitize_text_field( wp_unslash( $_GET['kml_uploaded_midi'] ) ) );
-			if ( ! empty( $uploaded['found'] ) ) {
-				$file_url = (string) $uploaded['file_url'];
-				$filename = (string) $uploaded['filename'];
-			}
-		}
-
-		if ( '' === $file_url && '' !== trim( (string) $atts['src'] ) ) {
+		if ( '' !== trim( (string) $atts['src'] ) ) {
 			$file_url = self::normalize_player_src( (string) $atts['src'] );
 			$filename = wp_basename( parse_url( $file_url, PHP_URL_PATH ) ?: $file_url );
 		}
 
-		if ( '' === $file_url ) {
-			$file_url = plugins_url( 'public/assets/chromatic-scale.mid', KML_PLUGIN_FILE );
-			$filename = __( 'Chromatic scale', 'kuhmann-midi-library' );
-		}
-
+		// The legacy `upload` attribute controls the local picker; files are never posted.
 		$show_upload = self::truthy_shortcode_value( (string) $atts['upload'] );
 		$upload_id = 'kml_midi_upload_' . wp_generate_uuid4();
+		$demo_url = plugins_url( 'public/assets/demo-cloud-whisper.mid', KML_PLUGIN_FILE );
+		$demo_title = __( 'Cloud Whisper — Bennie Gunn (demo excerpt)', 'kuhmann-midi-library' );
 
 		ob_start();
 		?>
-		<div class="kml-midi-player-tool">
+		<div class="kml-midi-player-tool" data-local-files="<?php echo $show_upload ? '1' : '0'; ?>" data-demo-url="<?php echo esc_url( $demo_url ); ?>" data-demo-title="<?php echo esc_attr( $demo_title ); ?>">
 			<?php if ( $show_upload ) : ?>
-				<form class="kml-player-upload" method="post" enctype="multipart/form-data">
-					<?php echo wp_nonce_field( 'kml_midi_player_upload', 'kml_midi_player_nonce', true, false ); ?>
-					<input type="hidden" name="kml_midi_player_upload" value="1">
-					<div class="kml-upload-label"><?php echo esc_html__( 'Upload MIDI', 'kuhmann-midi-library' ); ?></div>
+				<div class="kml-player-upload">
+					<div class="kml-upload-label"><?php echo esc_html__( 'Open a MIDI file', 'kuhmann-midi-library' ); ?></div>
 					<div class="kml-upload-picker">
 						<label class="kml-upload-button" for="<?php echo esc_attr( $upload_id ); ?>"><?php echo esc_html__( 'Choose MIDI', 'kuhmann-midi-library' ); ?></label>
-						<input id="<?php echo esc_attr( $upload_id ); ?>" class="kml-upload-input" type="file" name="kml_midi_file" accept=".mid,.midi,audio/midi,audio/x-midi">
+						<input id="<?php echo esc_attr( $upload_id ); ?>" class="kml-upload-input" type="file" accept=".mid,.midi,audio/midi,audio/x-midi" aria-describedby="<?php echo esc_attr( $upload_id ); ?>_hint <?php echo esc_attr( $upload_id ); ?>_privacy">
 						<span class="kml-upload-file-name" data-default="<?php echo esc_attr__( 'No file selected', 'kuhmann-midi-library' ); ?>"><?php echo esc_html__( 'No file selected', 'kuhmann-midi-library' ); ?></span>
 					</div>
-					<button type="submit" class="kml-btn"><?php echo esc_html__( 'Load', 'kuhmann-midi-library' ); ?></button>
-				</form>
+					<button type="button" class="kml-btn kml-demo"><?php echo esc_html__( 'Try a demo', 'kuhmann-midi-library' ); ?></button>
+				</div>
+				<p class="kml-file-hint" id="<?php echo esc_attr( $upload_id ); ?>_hint"><?php echo esc_html__( 'Choose a .mid or .midi file, or drag one onto the player. It opens immediately; press Play when you are ready.', 'kuhmann-midi-library' ); ?></p>
+				<p class="kml-file-privacy" id="<?php echo esc_attr( $upload_id ); ?>_privacy"><?php echo esc_html__( 'Your MIDI file stays on your device.', 'kuhmann-midi-library' ); ?></p>
+				<noscript><p><?php echo esc_html__( 'Enable JavaScript to open and play MIDI files in your browser.', 'kuhmann-midi-library' ); ?></p></noscript>
+			<?php elseif ( '' === $file_url ) : ?>
+				<button type="button" class="kml-btn kml-demo"><?php echo esc_html__( 'Try a demo', 'kuhmann-midi-library' ); ?></button>
 			<?php endif; ?>
 
-			<?php if ( $message ) : ?>
-				<div class="<?php echo esc_attr( $message_class ); ?>"><?php echo esc_html( $message ); ?></div>
-			<?php endif; ?>
-
-			<?php if ( $file_url ) : ?>
-				<?php self::render_piano_roll( $file_url, $filename ); ?>
-			<?php endif; ?>
+			<p class="kml-file-message" role="status" aria-live="polite" hidden></p>
+			<?php self::render_piano_roll( $file_url, $filename ); ?>
 		</div>
 		<?php
 		return (string) ob_get_clean();
@@ -300,11 +264,7 @@ final class KML_Shortcodes {
 		$uid = 'kml_shortcode_player_' . wp_generate_uuid4();
 		?>
 		<section class="kml-player">
-			<?php if ( $filename ) : ?>
-				<h2 class="kml-player-title"><?php echo esc_html( $filename ); ?></h2>
-			<?php endif; ?>
-
-			<div class="kml-roll" data-midi-url="<?php echo esc_url( $file_url ); ?>" id="<?php echo esc_attr( $uid ); ?>">
+			<div class="kml-roll" data-midi-url="<?php echo esc_url( $file_url ); ?>" data-midi-title="<?php echo esc_attr( $filename ); ?>" id="<?php echo esc_attr( $uid ); ?>">
 				<div class="kml-roll-controls">
 					<button type="button" class="kml-btn kml-play"><?php echo esc_html__( 'Play', 'kuhmann-midi-library' ); ?></button>
 					<button type="button" class="kml-btn kml-stop"><?php echo esc_html__( 'Stop', 'kuhmann-midi-library' ); ?></button>
@@ -331,11 +291,6 @@ final class KML_Shortcodes {
 			</div>
 		</section>
 		<?php
-	}
-
-	private static function is_player_upload_request(): bool {
-		return 'POST' === ( isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '' )
-			&& isset( $_POST['kml_midi_player_upload'] );
 	}
 
 	private static function normalize_player_src( string $src ): string {

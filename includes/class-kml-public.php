@@ -326,99 +326,7 @@ final class KML_Public {
 		);
 	}
 
-	public static function get_uploaded_player_file( string $filename ): array {
-		$filename = sanitize_file_name( wp_basename( rawurldecode( $filename ) ) );
-		if ( '' === $filename ) {
-			return self::direct_player_error( __( 'Missing uploaded MIDI file.', 'kuhmann-midi-library' ) );
-		}
-
-		$ext = strtolower( pathinfo( $filename, PATHINFO_EXTENSION ) );
-		if ( ! in_array( $ext, array( 'mid', 'midi' ), true ) ) {
-			return self::direct_player_error( __( 'Only .mid and .midi files can be loaded by this player.', 'kuhmann-midi-library' ) );
-		}
-
-		$upload_dir = self::get_player_upload_dir( false );
-		if ( empty( $upload_dir['dir'] ) || empty( $upload_dir['url'] ) ) {
-			return self::direct_player_error( __( 'The player upload directory could not be resolved.', 'kuhmann-midi-library' ) );
-		}
-
-		$abs_path  = trailingslashit( $upload_dir['dir'] ) . $filename;
-		$real_root = realpath( $upload_dir['dir'] );
-		$real_file = realpath( $abs_path );
-
-		if ( ! $real_root || ! $real_file || ! is_file( $real_file ) || ! is_readable( $real_file ) || ! self::path_is_inside( $real_file, $real_root ) ) {
-			return self::direct_player_error( __( 'The uploaded MIDI file could not be found.', 'kuhmann-midi-library' ) );
-		}
-
-		return array(
-			'found'    => true,
-			'error'    => '',
-			'relpath'  => self::PLAYER_UPLOAD_SUBDIR . '/' . $filename,
-			'abs_path' => $real_file,
-			'file_url' => esc_url_raw( trailingslashit( $upload_dir['url'] ) . rawurlencode( $filename ) ),
-			'filename' => $filename,
-			'filesize' => (int) @filesize( $real_file ),
-			'mtime'    => (int) @filemtime( $real_file ),
-		);
-	}
-
-	public static function save_player_upload( array $file ): array {
-		self::purge_player_uploads( false );
-
-		$error_code = isset( $file['error'] ) ? (int) $file['error'] : UPLOAD_ERR_NO_FILE;
-		if ( UPLOAD_ERR_OK !== $error_code ) {
-			return self::direct_player_error( self::upload_error_message( $error_code ) );
-		}
-
-		$original_name = isset( $file['name'] ) ? (string) $file['name'] : '';
-		$tmp_name      = isset( $file['tmp_name'] ) ? (string) $file['tmp_name'] : '';
-		$size          = isset( $file['size'] ) ? (int) $file['size'] : 0;
-		$ext           = strtolower( pathinfo( $original_name, PATHINFO_EXTENSION ) );
-
-		if ( ! in_array( $ext, array( 'mid', 'midi' ), true ) ) {
-			return self::direct_player_error( __( 'Please upload a .mid or .midi file.', 'kuhmann-midi-library' ) );
-		}
-
-		$max_size = (int) apply_filters( 'kml_midi_player_upload_max_size', 20 * 1024 * 1024 );
-		if ( $max_size > 0 && $size > $max_size ) {
-			return self::direct_player_error(
-				sprintf(
-					/* translators: %s: formatted maximum upload size. */
-					__( 'The MIDI file is larger than the %s upload limit.', 'kuhmann-midi-library' ),
-					size_format( $max_size )
-				)
-			);
-		}
-
-		if ( '' === $tmp_name || ! is_uploaded_file( $tmp_name ) ) {
-			return self::direct_player_error( __( 'The uploaded file could not be read.', 'kuhmann-midi-library' ) );
-		}
-
-		$upload_dir = self::get_player_upload_dir( true );
-		if ( empty( $upload_dir['dir'] ) || ! is_dir( $upload_dir['dir'] ) || ! is_writable( $upload_dir['dir'] ) ) {
-			return self::direct_player_error( __( 'The player upload directory is not writable.', 'kuhmann-midi-library' ) );
-		}
-
-		$base_name = sanitize_file_name( pathinfo( $original_name, PATHINFO_FILENAME ) );
-		if ( '' === $base_name ) {
-			$base_name = 'midi';
-		}
-
-		$filename = wp_unique_filename(
-			$upload_dir['dir'],
-			$base_name . '-' . wp_generate_password( 8, false, false ) . '.' . $ext
-		);
-		$target = trailingslashit( $upload_dir['dir'] ) . $filename;
-
-		if ( ! @move_uploaded_file( $tmp_name, $target ) ) {
-			return self::direct_player_error( __( 'The uploaded MIDI file could not be saved.', 'kuhmann-midi-library' ) );
-		}
-
-		@chmod( $target, 0644 );
-
-		return self::get_uploaded_player_file( $filename );
-	}
-
+	// Retained to expire files saved by earlier versions of the player.
 	public static function schedule_player_upload_purge(): void {
 		if ( wp_next_scheduled( 'kml_purge_player_uploads' ) ) {
 			return;
@@ -428,7 +336,7 @@ final class KML_Public {
 	}
 
 	public static function purge_player_uploads( bool $purge_all = true ): void {
-		$upload_dir = self::get_player_upload_dir( false );
+		$upload_dir = self::get_player_upload_dir();
 		$dir        = ! empty( $upload_dir['dir'] ) ? (string) $upload_dir['dir'] : '';
 
 		if ( '' === $dir || ! is_dir( $dir ) || ! is_readable( $dir ) ) {
@@ -762,7 +670,7 @@ final class KML_Public {
 		return rtrim( ABSPATH, "/\\ \t\n\r\0\x0B" );
 	}
 
-	private static function get_player_upload_dir( bool $create ): array {
+	private static function get_player_upload_dir(): array {
 		$uploads = wp_upload_dir();
 		if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) || empty( $uploads['baseurl'] ) ) {
 			return array(
@@ -774,17 +682,6 @@ final class KML_Public {
 		$dir = trailingslashit( (string) $uploads['basedir'] ) . self::PLAYER_UPLOAD_SUBDIR;
 		$url = trailingslashit( (string) $uploads['baseurl'] ) . self::PLAYER_UPLOAD_SUBDIR;
 
-		if ( $create && ! is_dir( $dir ) ) {
-			wp_mkdir_p( $dir );
-		}
-
-		if ( $create && is_dir( $dir ) ) {
-			$index_file = trailingslashit( $dir ) . 'index.html';
-			if ( ! file_exists( $index_file ) ) {
-				@file_put_contents( $index_file, '' );
-			}
-		}
-
 		return array(
 			'dir' => $dir,
 			'url' => $url,
@@ -794,20 +691,6 @@ final class KML_Public {
 	private static function next_midnight_timestamp(): int {
 		$midnight = new DateTimeImmutable( 'tomorrow 00:00:00', wp_timezone() );
 		return $midnight->getTimestamp();
-	}
-
-	private static function upload_error_message( int $error_code ): string {
-		switch ( $error_code ) {
-			case UPLOAD_ERR_INI_SIZE:
-			case UPLOAD_ERR_FORM_SIZE:
-				return __( 'The uploaded MIDI file is too large.', 'kuhmann-midi-library' );
-			case UPLOAD_ERR_PARTIAL:
-				return __( 'The MIDI file upload did not finish.', 'kuhmann-midi-library' );
-			case UPLOAD_ERR_NO_FILE:
-				return __( 'Please choose a MIDI file to upload.', 'kuhmann-midi-library' );
-			default:
-				return __( 'The MIDI file could not be uploaded.', 'kuhmann-midi-library' );
-		}
 	}
 
 	private static function path_is_inside( string $path, string $root ): bool {

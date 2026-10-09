@@ -46,6 +46,7 @@ wp-content/upgrade/
 *.mid
 *.midi
 !public/assets/chromatic-scale.mid
+!public/assets/demo-cloud-whisper.mid
 
 # Release archives and backups
 *.zip
