@@ -119,11 +119,11 @@ Render a standalone MIDI player with local file selection and drag-and-drop supp
 
 Choose a `.mid` or `.midi` file, or drag one onto the player, to parse it immediately and display its title, duration, note count, and piano roll. Press **Play** when ready. There is no separate Load step, page submission, or server copy: your MIDI file stays on your device. Browser scripts and instrument samples may still load over the network; local MIDI contents are not sent with those requests.
 
-**Try a demo** loads a 38.4-second excerpt of [“Cloud Whisper” by Bennie Gunn](https://www.alexanderpeppe.com/midi/04-cloud-whisper-bennie-gunn-ce57643e/) from the archive, with electric piano, jazz guitar, vibraphone, fretless bass, and drums. The excerpt is bundled with the plugin so it does not depend on a particular archive URL at playback time. Nothing plays until the visitor presses Play.
+**Try a demo** loads “The Man That Got Away” from the archive's **Disklavier Jazz 3** folder, a roughly three-minute performance for acoustic piano and acoustic bass. The complete original MIDI file is bundled unchanged with the plugin, so it does not depend on a particular archive URL at playback time. Nothing plays until the visitor presses Play.
 
-The seek slider moves directly to a passage. Set **A**, seek to the end of the passage, then set **B** to enable the loop; press Play if playback is paused. Seeking outside the loop disables it. Choose **Piano sound** or **File's instruments** explicitly; changing tempo preserves the current musical position. Changing sound pauses at the current position. Loading progress and errors have a persistent message area separate from the playback clock.
+The seek slider moves directly to a passage. Set **A**, seek to the end of the passage, then set **B** to enable the loop; press Play if playback is paused. A and B appear as labeled vertical lines on the piano roll, including when looping is disabled. Loop playback preserves normal note releases and uses brief fades at the passage boundaries; the next pass is scheduled ahead on the audio clock. Seeking outside the loop disables it. Choose **Piano sound** or **File's instruments** explicitly; changing tempo preserves the current musical position. Changing sound pauses at the current position. Loading progress and errors have a persistent message area separate from the playback clock.
 
-This is a musical preview: sustain (CC64) and sostenuto (CC66) extend sounding notes, including when seeking into a held note. Soft pedal is visualized only. Half-pedaling, pitch bend, expression, and SysEx effects are not reproduced, and percussion uses approximate synthesized drums. **Piano sound** enables WAV export of the full piece; A–B loop boundaries do not trim the export.
+This is a musical preview: sustain (CC64) and sostenuto (CC66) extend sounding notes, including when seeking into a held note. Soft pedal (CC67) lowers its channel’s gain to 80% with a smooth 120 ms fade at normal tempo, including already sounding notes; release smoothly restores full volume. Seeking and looping restore the pedal level at the target position, and WAV export uses the same fades. Half-pedaling, pitch bend, expression, and SysEx effects are not reproduced, and percussion uses approximate synthesized drums. **Piano sound** enables WAV export of the full piece; A–B loop boundaries do not trim the export.
 
 The legacy `upload` shortcode attribute now controls the local file picker. `upload="0"` hides it and disables file dropping; individual indexed MIDI pages also omit the picker. Uploads from older plugin versions still expire through the existing nightly cleanup, but the player no longer accepts new server uploads or `kml_uploaded_midi` URLs.
 
@@ -205,7 +205,7 @@ This repository intentionally excludes MIDI libraries and other large/generated 
 ### Unreleased
 
 - Replaced public file uploads and the Load step with immediate browser-local file selection and dropping.
-- Added a multiinstrument “Cloud Whisper” demo excerpt, seeking, A–B looping, and an explicit sound choice.
+- Added the original archive performance of “The Man That Got Away” as a multiinstrument demo, seeking, A–B looping, and an explicit sound choice.
 - Preserved musical position when changing tempo and separated player messages from the playback clock.
 
 ### 0.1.13

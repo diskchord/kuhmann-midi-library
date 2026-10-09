@@ -2,12 +2,15 @@
 (function () {
   'use strict';
 
-  // ---- Tone.js piano sampler ----
+  // ---- Piano samples and playback settings ----
   const PIANO_LOW_MIDI = 21; // A0
   const PIANO_HIGH_MIDI = 108; // C8
   const PIANO_KEY_COUNT = PIANO_HIGH_MIDI - PIANO_LOW_MIDI + 1;
   const PEDAL_ROW_WEIGHT = 3;
   const SUSTAIN_CC = 64;
+  const SOFT_CC = 67;
+  const SOFT_PEDAL_GAIN = 0.8;
+  const SOFT_PEDAL_FADE_SECONDS = 0.12;
   const PEDAL_ON_THRESHOLD = 0.5;
   const PIANO_NOTE_ATTACK = 0.012;
   const PIANO_NOTE_RELEASE = 0.45;
@@ -27,13 +30,14 @@
   const AUDIO_RENDER_TAIL_SECONDS = 1.2;
   const NOTE_SCHEDULE_LOOKAHEAD = 0.1;
   const NOTE_SCHEDULE_INTERVAL_MS = 25;
+  const LOOP_FADE_SECONDS = 0.008;
   const MAX_MIDI_BYTES = 20 * 1024 * 1024;
   const PIANO_SAMPLE_ROOTS = [
     21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60, 63, 66, 69, 72, 75, 78, 81, 84,
     87, 90, 93, 96, 99, 102, 105, 108,
   ];
   const PEDAL_LANES = [
-    { cc: 67, label: 'Soft' },
+    { cc: SOFT_CC, label: 'Soft' },
     { cc: 66, label: 'Sostenuto' },
     { cc: SUSTAIN_CC, label: 'Sustain' },
   ];
@@ -203,11 +207,11 @@
     return names[midi % 12] + String(Math.floor(midi / 12) - 1);
   }
 
-  function buildToneSamplerUrls() {
+  function buildPianoSampleUrls() {
     const urls = {};
 
     PIANO_SAMPLE_ROOTS.forEach((midi) => {
-      urls[midi] = midiToSampleNote(midi) + 'v' + PIANO_SAMPLE_VELOCITY + '.[mp3|ogg]';
+      urls[midi] = midiToSampleNote(midi) + 'v' + PIANO_SAMPLE_VELOCITY + '.mp3';
     });
 
     return urls;
@@ -241,9 +245,7 @@
           tonePiano = piano;
           resolve(piano);
         },
-        urls: Object.fromEntries(PIANO_SAMPLE_ROOTS.map((root) => [
-          root, midiToSampleNote(root) + 'v' + PIANO_SAMPLE_VELOCITY + '.mp3',
-        ])),
+        urls: buildPianoSampleUrls(),
       });
       const filter = new Tone.Filter({
         frequency: PIANO_LOWPASS_CUTOFF_HZ,
@@ -611,6 +613,62 @@
     );
   }
 
+  function automationValueAt(points, time) {
+    let low = 0;
+    let high = points.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (points[middle].time <= time) low = middle + 1;
+      else high = middle;
+    }
+    const previous = low ? points[low - 1] : { time: 0, value: 1 };
+    const next = points[low];
+    if (!next) return previous.value;
+    const fraction = clamp((time - previous.time) / (next.time - previous.time), 0, 1);
+    return previous.value + fraction * (next.value - previous.value);
+  }
+
+  function buildSoftPedalAutomation(pedalEvents) {
+    const lane = pedalEvents.find((item) => item.cc === SOFT_CC);
+    const byChannel = new Map();
+    if (!lane) return byChannel;
+    lane.tracks.forEach((track) => {
+      if (!byChannel.has(track.channel)) byChannel.set(track.channel, []);
+      track.events.forEach((event) => byChannel.get(track.channel).push(event));
+    });
+    byChannel.forEach((events, channel) => {
+      const points = [{ time: 0, value: 1 }];
+      let target = 1;
+      events.sort((a, b) => a.time - b.time).forEach((event) => {
+        const next = event.value >= PEDAL_ON_THRESHOLD ? SOFT_PEDAL_GAIN : 1;
+        if (next === target) return;
+        const time = Math.max(0, event.time);
+        const value = automationValueAt(points, time);
+        // A quick reversal begins at the in-progress level, without a jump.
+        while (points.length && points[points.length - 1].time >= time) points.pop();
+        points.push({ time, value }, { time: time + SOFT_PEDAL_FADE_SECONDS, value: next });
+        target = next;
+      });
+      byChannel.set(channel, points);
+    });
+    return byChannel;
+  }
+
+  function scheduleSoftPedal(gain, points, songTime, audioTime, scale) {
+    const automation = points || [];
+    gain.setValueAtTime(automationValueAt(automation, songTime), audioTime);
+    automation.forEach((point) => {
+      if (point.time > songTime) {
+        gain.linearRampToValueAtTime(point.value, audioTime + (point.time - songTime) / scale);
+      }
+    });
+  }
+
+  function pianoSampleRoot(midi) {
+    return PIANO_SAMPLE_ROOTS.reduce((best, pitch) =>
+      Math.abs(pitch - midi) < Math.abs(best - midi) ? pitch : best);
+  }
+
   function segmentEnd(segment) {
     return segment.time + segment.duration;
   }
@@ -940,7 +998,7 @@
     return (baseName || 'midi-render') + '.wav';
   }
 
-  async function renderPianoAudio(renderNotes, renderDuration, renderTempoScale, renderVolumeScale, signal) {
+  async function renderPianoAudio(renderNotes, renderDuration, renderTempoScale, renderVolumeScale, softPedalAutomation, signal) {
     if (!window.Tone || typeof Tone.Offline !== 'function') {
       throw new Error('Tone.js offline rendering is unavailable.');
     }
@@ -953,21 +1011,26 @@
       0.25,
       renderDuration / safeTempoScale + AUDIO_RENDER_TAIL_SECONDS
     );
+    const liveContext = Tone.getContext();
+    let disposeRenderNodes = () => {};
 
     const renderedBuffer = await Tone.Offline(
       async () => {
-        let sampler = null;
+        let buffers = null;
         let filter = null;
         let compressor = null;
         let masterGain = null;
+        const channelGains = new Map();
+        const sources = [];
 
         const disposeOfflineNodes = () => {
-          [sampler, filter, compressor, masterGain].forEach((node) => {
+          [...sources, ...channelGains.values(), buffers, filter, compressor, masterGain].forEach((node) => {
             try {
               if (node && typeof node.dispose === 'function') node.dispose();
             } catch (e) {}
           });
         };
+        disposeRenderNodes = disposeOfflineNodes;
 
         await new Promise((resolve, reject) => {
           let settled = false;
@@ -993,15 +1056,11 @@
             signal.addEventListener('abort', abort, { once: true });
           }
 
-          sampler = new Tone.Sampler({
-            attack: PIANO_NOTE_ATTACK,
+          buffers = new Tone.ToneAudioBuffers({
             baseUrl: PIANO_SAMPLE_BASE_URL,
-            curve: 'exponential',
             onerror: (error) => finish(reject, error),
             onload: () => finish(resolve),
-            release: PIANO_NOTE_RELEASE,
-            urls: buildToneSamplerUrls(),
-            volume: PIANO_OUTPUT_VOLUME_DB,
+            urls: buildPianoSampleUrls(),
           });
 
           filter = new Tone.Filter({
@@ -1018,7 +1077,7 @@
           });
           masterGain = new Tone.Gain(PIANO_MASTER_GAIN * safeVolumeScale);
 
-          sampler.chain(filter, compressor, masterGain);
+          filter.chain(compressor, masterGain);
           masterGain.toDestination();
         });
 
@@ -1032,18 +1091,32 @@
           const duration = Math.max(0.03, (note.playbackDuration || note.duration || 0.03) / safeTempoScale);
           if (start > offlineDuration) continue;
 
-          sampler.triggerAttackRelease(
-            midiToToneNote(note.midi),
-            duration,
-            start,
-            toneVelocity(note)
-          );
+          if (!channelGains.has(note.channel)) {
+            const gain = new Tone.Gain(1).connect(filter);
+            scheduleSoftPedal(gain.gain, softPedalAutomation.get(note.channel), 0, 0, safeTempoScale);
+            channelGains.set(note.channel, gain);
+          }
+          const root = pianoSampleRoot(note.midi);
+          const source = new Tone.ToneBufferSource({
+            url: buffers.get(root),
+            curve: 'exponential',
+            fadeIn: PIANO_NOTE_ATTACK,
+            fadeOut: PIANO_NOTE_RELEASE,
+            playbackRate: Math.pow(2, (note.midi - root) / 12),
+          }).connect(channelGains.get(note.channel));
+          sources.push(source);
+          source.start(start, 0, duration, toneVelocity(note) * Math.pow(10, PIANO_OUTPUT_VOLUME_DB / 20));
         }
       },
       offlineDuration,
       AUDIO_RENDER_CHANNELS,
       AUDIO_RENDER_SAMPLE_RATE
-    );
+    ).finally(() => {
+      // Tone 14 does not restore its global context if the render callback
+      // rejects (for example, canceled or failed sample loading).
+      Tone.setContext(liveContext);
+      disposeRenderNodes();
+    });
 
     throwIfAborted(signal);
 
@@ -1157,10 +1230,6 @@
     loopControls.appendChild(loopReadout);
     navigation.append(seekLabel, loopControls);
     canvas.insertAdjacentElement('beforebegin', navigation);
-    const previewNote = document.createElement('p');
-    previewNote.className = 'kml-preview-note';
-    previewNote.textContent = 'Preview: sustain and sostenuto are reproduced as on/off pedals. Soft pedal is shown only. Half-pedaling, pitch bend, expression and SysEx are not reproduced; percussion uses an approximate drum sound. Piano sound also enables WAV export of the full piece.';
-    canvas.insertAdjacentElement('afterend', previewNote);
 
     channelKey.className = 'kml-channel-key';
     channelKey.hidden = true;
@@ -1220,6 +1289,7 @@
     let playbackNotes = [];
     let channelMetas = [];
     let pedalLanes = PEDAL_LANES.map((lane) => Object.assign({}, lane, { segments: [] }));
+    let softPedalAutomation = new Map();
     let durTotal = 0;
     let audioMode = 'piano';
     const range = { lo: PIANO_LOW_MIDI, hi: PIANO_HIGH_MIDI };
@@ -1231,11 +1301,10 @@
     // Playback state
     let tempoScale = 1.0; // 1.0 = normal
     let isPlaying = false;
-    let startPerf = 0; // performance.now() when playback started
     let startAt = 0; // song time offset (seconds) when playback started
     let activePiano = null;
     let scheduleTimer = null;
-    let nextNoteIndex = 0;
+    let playbackAudioStart = null;
     let renderedAudioUrl = '';
     let renderProgressTimer = null;
     let activeRender = null;
@@ -1246,8 +1315,7 @@
     let loopA = null;
     let loopB = null;
     let loopEnabled = false;
-    const pianoVoices = new Set();
-    const soundfontVoices = new Set();
+    const playbackPasses = new Map();
     const mutedChannels = new Set();
 
     function setStatus(msg, kind) {
@@ -1535,9 +1603,17 @@
 
     function currentT() {
       if (!isPlaying) return startAt;
-      const elapsed = (performance.now() - startPerf) / 1000;
+      if (playbackAudioStart === null) return startAt;
+      const elapsed = Math.max(0, audioClock() - playbackAudioStart);
       const t = startAt + elapsed * tempoScale;
+      if (loopEnabled && t >= loopB) return loopA + (t - loopB) % (loopB - loopA);
       return clamp(t, 0, durTotal);
+    }
+
+    function audioClock() {
+      return audioMode === 'soundfont' && activeSoundfont
+        ? activeSoundfont.context.currentTime
+        : (typeof Tone.immediate === 'function' ? Tone.immediate() : Tone.now());
     }
 
     function updateNavigation() {
@@ -1564,9 +1640,7 @@
         loopEnabled = false;
         updateLoop();
       }
-      startPerf = performance.now();
       if (playing) {
-        resetScheduleIndex();
         schedulePlaybackWindow();
         if (isPlaying && !scheduleTimer) {
           scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
@@ -1575,35 +1649,36 @@
       updateNavigation();
     }
 
+    function disposePass(pass) {
+      pass.pianoVoices.forEach((voice) => {
+        try {
+          voice.fadeOut = 0;
+          voice.stop(audioClock());
+        } catch (e) {}
+        try { voice.dispose(); } catch (e) {}
+      });
+      pass.pianoVoices.clear();
+      pass.soundfontVoices.forEach(({ node }) => {
+        try {
+          node.stop(audioClock());
+          node.disconnect();
+        } catch (e) {}
+      });
+      pass.soundfontVoices.clear();
+      [...pass.channelGains.values(), pass.output].forEach((gain) => {
+        if (typeof gain.dispose === 'function') gain.dispose();
+        else gain.disconnect();
+      });
+    }
+
     function cancelScheduled() {
       if (scheduleTimer) {
         window.clearInterval(scheduleTimer);
         scheduleTimer = null;
       }
-
-      nextNoteIndex = 0;
-
-      // Keep every voice until it ends. Sampler.triggerRelease drops its reference
-      // immediately, making already scheduled releases impossible to cancel.
-      pianoVoices.forEach((voice) => {
-        try {
-          // Replace a distant release timer as well as disconnecting the voice.
-          voice.fadeOut = 0;
-          voice.stop(typeof Tone.immediate === 'function' ? Tone.immediate() : Tone.now());
-        } catch (e) {}
-        try { voice.dispose(); } catch (e) {}
-      });
-      pianoVoices.clear();
-
-      soundfontVoices.forEach(({ node }) => {
-        try {
-          node.stop(activeSoundfont.context.currentTime);
-          // The public play() API returns an AudioNode; disconnect also silences
-          // its release tail and any future attack after a seek or mute.
-          if (typeof node.disconnect === 'function') node.disconnect();
-        } catch (e) {}
-      });
-      soundfontVoices.clear();
+      playbackPasses.forEach(disposePass);
+      playbackPasses.clear();
+      playbackAudioStart = null;
     }
 
     function restartPlaybackAtCurrentTime() {
@@ -1611,8 +1686,6 @@
 
       startAt = currentT();
       cancelScheduled();
-      startPerf = performance.now();
-      resetScheduleIndex();
       schedulePlaybackWindow();
       if (isPlaying && !scheduleTimer) {
         scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
@@ -1634,17 +1707,48 @@
       restartPlaybackAtCurrentTime();
     }
 
-    function resetScheduleIndex() {
-      nextNoteIndex = 0;
-
-      while (nextNoteIndex < playbackNotes.length) {
-        const n = playbackNotes[nextNoteIndex];
-        if (n.time + n.playbackDuration > startAt) break;
-        nextNoteIndex++;
+    function createPass(cycle, audioNow) {
+      const songStart = cycle === 0 ? startAt : loopA;
+      const firstEnd = loopEnabled ? playbackAudioStart + (loopB - startAt) / tempoScale : Infinity;
+      const loopSeconds = loopEnabled ? (loopB - loopA) / tempoScale : Infinity;
+      const start = cycle === 0 ? playbackAudioStart : firstEnd + (cycle - 1) * loopSeconds;
+      const end = loopEnabled ? firstEnd + cycle * loopSeconds : Infinity;
+      const output = audioMode === 'soundfont' ? activeSoundfont.context.createGain() : new Tone.Gain(1);
+      output.connect(audioMode === 'soundfont' ? soundfontMasterGain : activePiano.filter);
+      if (loopEnabled) {
+        const attack = Math.max(start, audioNow);
+        const fade = Math.min(LOOP_FADE_SECONDS, Math.max(0, end - attack) / 2);
+        output.gain.setValueAtTime(0, attack);
+        output.gain.linearRampToValueAtTime(1, attack + fade);
+        output.gain.setValueAtTime(1, end - fade);
+        output.gain.linearRampToValueAtTime(0, end);
       }
+      const pass = {
+        start, end, songStart, output, nextNoteIndex: 0,
+        pianoVoices: new Set(), soundfontVoices: new Set(), channelGains: new Map(),
+      };
+      while (pass.nextNoteIndex < playbackNotes.length) {
+        const note = playbackNotes[pass.nextNoteIndex];
+        if (note.time + note.playbackDuration > songStart) break;
+        pass.nextNoteIndex++;
+      }
+      playbackPasses.set(cycle, pass);
+      return pass;
     }
 
-    function scheduleToneNote(n, tNow, toneNow) {
+    function channelOutput(channel, pass, songTime, audioTime) {
+      if (!pass.channelGains.has(channel)) {
+        const gain = audioMode === 'soundfont'
+          ? activeSoundfont.context.createGain()
+          : new Tone.Gain(1);
+        gain.connect(pass.output);
+        scheduleSoftPedal(gain.gain, softPedalAutomation.get(channel), songTime, audioTime, tempoScale);
+        pass.channelGains.set(channel, gain);
+      }
+      return pass.channelGains.get(channel);
+    }
+
+    function scheduleToneNote(n, tNow, toneNow, pass) {
       if (!activePiano || !activePiano.buffers) return;
       if (!Number.isFinite(n.midi) || n.midi < 0 || n.midi > 127) return;
 
@@ -1654,21 +1758,20 @@
       const audibleStart = Math.max(n.time, tNow);
       const when = toneNow + Math.max(0, (audibleStart - tNow) / tempoScale);
       const duration = Math.max(0.001, (end - audibleStart) / tempoScale);
-      const root = PIANO_SAMPLE_ROOTS.reduce((best, pitch) =>
-        Math.abs(pitch - n.midi) < Math.abs(best - n.midi) ? pitch : best);
+      const root = pianoSampleRoot(n.midi);
       const voice = new Tone.ToneBufferSource({
         url: activePiano.buffers.get(root),
         curve: 'exponential',
         fadeIn: PIANO_NOTE_ATTACK,
-        fadeOut: loopEnabled ? 0 : PIANO_NOTE_RELEASE,
+        fadeOut: PIANO_NOTE_RELEASE,
         playbackRate: Math.pow(2, (n.midi - root) / 12),
-        onended: () => { pianoVoices.delete(voice); voice.dispose(); },
-      }).connect(activePiano.filter);
-      pianoVoices.add(voice);
+        onended: () => { pass.pianoVoices.delete(voice); voice.dispose(); },
+      }).connect(channelOutput(n.channel, pass, tNow, toneNow));
+      pass.pianoVoices.add(voice);
       voice.start(when, 0, duration, toneVelocity(n) * Math.pow(10, PIANO_OUTPUT_VOLUME_DB / 20));
     }
 
-    function scheduleSoundfontNote(n, tNow, audioNow) {
+    function scheduleSoundfontNote(n, tNow, audioNow, pass) {
       if (!activeSoundfont || !activeSoundfont.players) return;
       if (!Number.isFinite(n.midi) || n.midi < 0 || n.midi > 127) return;
 
@@ -1685,11 +1788,14 @@
       const node = player.play(midiToToneNote(clamp(Math.round(n.midi), 0, 127)), when, {
         gain: toneVelocity(n),
         duration,
-        // An explicit ADSR is required: soundfont-player treats release: 0 as
-        // missing and otherwise falls back to its default release tail.
-        adsr: [0.01, 0.1, 0.9, loopEnabled ? 0 : 0.1],
+        // Keep natural note releases inside a loop. The pass output fades at B.
+        adsr: [0.01, 0.1, 0.9, 0.1],
       });
-      if (node) soundfontVoices.add({ node, end: when + duration + 0.1 });
+      if (node) {
+        node.disconnect();
+        node.connect(channelOutput(n.channel, pass, tNow, audioNow));
+        pass.soundfontVoices.add({ node, end: when + duration + 0.1 });
+      }
     }
 
     function schedulePlaybackWindow() {
@@ -1697,18 +1803,9 @@
       if (audioMode === 'soundfont' && !activeSoundfont) return;
       if (audioMode !== 'soundfont' && !activePiano) return;
 
-      let tNow = currentT();
-      if (loopEnabled && tNow >= loopB) {
-        const overshoot = (tNow - loopB) % (loopB - loopA);
-        cancelScheduled();
-        startAt = loopA + overshoot;
-        startPerf = performance.now();
-        resetScheduleIndex();
-        tNow = startAt;
-        if (isPlaying && !scheduleTimer) {
-          scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
-        }
-      } else if (!loopEnabled && tNow >= durTotal) {
+      const audioNow = audioClock();
+      if (playbackAudioStart === null) playbackAudioStart = audioNow;
+      if (!loopEnabled && currentT() >= durTotal) {
         // Let the last notes' already scheduled release tails finish naturally.
         if (scheduleTimer) window.clearInterval(scheduleTimer);
         scheduleTimer = null;
@@ -1719,28 +1816,38 @@
         setStatus('Finished. Press Play to start again.');
         return;
       }
-      const audioNow =
-        audioMode === 'soundfont' && activeSoundfont.context
-          ? activeSoundfont.context.currentTime
-          : (typeof Tone.immediate === 'function' ? Tone.immediate() : Tone.now());
-      soundfontVoices.forEach((voice) => {
-        if (voice.end < audioNow) soundfontVoices.delete(voice);
-      });
-      const windowEnd = Math.min(loopEnabled ? loopB : durTotal, tNow + NOTE_SCHEDULE_LOOKAHEAD * tempoScale);
 
-      while (nextNoteIndex < playbackNotes.length) {
-        const n = playbackNotes[nextNoteIndex];
-        if (n.time > windowEnd || (loopEnabled && n.time >= loopB)) break;
-
-        if (isChannelMuted(n.channel)) {
-          nextNoteIndex++;
-          continue;
-        } else if (audioMode === 'soundfont') {
-          scheduleSoundfontNote(n, tNow, audioNow);
-        } else {
-          scheduleToneNote(n, tNow, audioNow);
+      // A pass is already silent at B before its nodes are retired. Schedule the
+      // next pass in advance on the audio clock, without a timer-driven restart.
+      playbackPasses.forEach((pass, cycle) => {
+        if (pass.end <= audioNow) {
+          disposePass(pass);
+          playbackPasses.delete(cycle);
         }
-        nextNoteIndex++;
+      });
+      const horizon = audioNow + NOTE_SCHEDULE_LOOKAHEAD;
+      const firstEnd = loopEnabled ? playbackAudioStart + (loopB - startAt) / tempoScale : Infinity;
+      const loopSeconds = loopEnabled ? (loopB - loopA) / tempoScale : Infinity;
+      const cycleAt = (time) => !loopEnabled || time < firstEnd
+        ? 0 : 1 + Math.floor((time - firstEnd) / loopSeconds);
+      for (let cycle = cycleAt(audioNow); cycle <= cycleAt(horizon); cycle++) {
+        const pass = playbackPasses.get(cycle) || createPass(cycle, audioNow);
+        const reference = Math.max(audioNow, pass.start);
+        const songTime = pass.songStart + (reference - pass.start) * tempoScale;
+        const windowEnd = Math.min(loopEnabled ? loopB : durTotal,
+          pass.songStart + (horizon - pass.start) * tempoScale);
+        pass.soundfontVoices.forEach((voice) => {
+          if (voice.end < audioNow) pass.soundfontVoices.delete(voice);
+        });
+        while (pass.nextNoteIndex < playbackNotes.length) {
+          const note = playbackNotes[pass.nextNoteIndex];
+          if (note.time > windowEnd || (loopEnabled && note.time >= loopB)) break;
+          if (!isChannelMuted(note.channel)) {
+            if (audioMode === 'soundfont') scheduleSoundfontNote(note, songTime, reference, pass);
+            else scheduleToneNote(note, songTime, reference, pass);
+          }
+          pass.nextNoteIndex++;
+        }
       }
     }
 
@@ -1784,8 +1891,6 @@
       if (loopEnabled && (startAt < loopA || startAt >= loopB)) startAt = loopA;
       else if (startAt >= durTotal) startAt = 0;
       isPlaying = true;
-      startPerf = performance.now();
-      resetScheduleIndex();
       schedulePlaybackWindow();
       if (isPlaying && !scheduleTimer) {
         scheduleTimer = window.setInterval(schedulePlaybackWindow, NOTE_SCHEDULE_INTERVAL_MS);
@@ -1948,6 +2053,30 @@
       ctx.lineTo(playX, h);
       ctx.stroke();
 
+      // Keep marks visible as soon as they are set, even with looping disabled.
+      [[loopA, 'A', '#087f5b'], [loopB, 'B', '#7c3aed']].forEach(([time, label, color]) => {
+        if (time === null || time < viewLeftTime || time > viewRightTime) return;
+        const x = clamp((time - viewLeftTime) * pxPerSec, dpr, w - dpr);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2 * dpr;
+        ctx.setLineDash(loopEnabled ? [] : [5 * dpr, 3 * dpr]);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+        const labelWidth = 22 * dpr;
+        const labelX = clamp(x - labelWidth / 2, 0, w - labelWidth);
+        ctx.fillStyle = color;
+        ctx.fillRect(labelX, 0, labelWidth, 22 * dpr);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold ' + (13 * dpr) + 'px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, labelX + labelWidth / 2, 11 * dpr);
+        ctx.restore();
+      });
+
       // Time label
       updateNavigation();
 
@@ -2013,11 +2142,12 @@
 
     seek.addEventListener('input', () => seekTo(seek.value));
     loopAButton.addEventListener('click', () => {
-      loopA = currentT();
+      const position = currentT();
+      loopA = position;
       if (loopB !== null && loopB - loopA < 0.1) loopB = null;
       loopEnabled = false;
       updateLoop();
-      restartPlaybackAtCurrentTime();
+      seekTo(position);
       setStatus('A set. Seek to the passage end, then set B.');
     });
     loopBButton.addEventListener('click', () => {
@@ -2033,17 +2163,18 @@
       setStatus('Loop ready. Playback repeats from A to B.');
     });
     loopToggle.addEventListener('change', () => {
+      const position = currentT();
       loopEnabled = loopToggle.checked && loopA !== null && loopB !== null;
       updateLoop();
-      const position = currentT();
       seekTo(loopEnabled && (position < loopA || position >= loopB) ? loopA : position);
     });
     loopClear.addEventListener('click', () => {
+      const position = currentT();
       loopEnabled = false;
       loopA = null;
       loopB = null;
       updateLoop();
-      restartPlaybackAtCurrentTime();
+      seekTo(position);
       setStatus('Loop cleared.');
     });
     soundMode.addEventListener('change', () => {
@@ -2106,6 +2237,7 @@
           durTotal,
           tempoScale,
           volumeScale,
+          softPedalAutomation,
           renderState.signal
         );
         ensureCurrentRender(renderState);
@@ -2192,11 +2324,13 @@
         const sustain = buildPedalSegmentsByChannel(pedalEvents, SUSTAIN_CC, duration);
         const sostenuto = buildPedalSegmentsByChannel(pedalEvents, 66, duration);
         const parsedPlaybackNotes = buildPlaybackNotes(parsedNotes, sustain, sostenuto);
+        const parsedSoftPedal = buildSoftPedalAutomation(pedalEvents);
 
         // Commit only after successful parsing; a bad replacement keeps the previous piece.
         midi = parsed;
         notes = parsedNotes;
         playbackNotes = parsedPlaybackNotes;
+        softPedalAutomation = parsedSoftPedal;
         durTotal = Math.max(duration, noteEndTime(playbackNotes, 'playbackDuration'));
         pedalLanes = buildPedalSegments(pedalEvents, durTotal);
         channelMetas = collectChannelMetas(notes);

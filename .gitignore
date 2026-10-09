@@ -46,7 +46,7 @@ wp-content/upgrade/
 *.mid
 *.midi
 !public/assets/chromatic-scale.mid
-!public/assets/demo-cloud-whisper.mid
+!public/assets/demo-the-man-that-got-away.mid
 
 # Release archives and backups
 *.zip

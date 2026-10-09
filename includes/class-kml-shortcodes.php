@@ -63,8 +63,8 @@ final class KML_Shortcodes {
 		// The legacy `upload` attribute controls the local picker; files are never posted.
 		$show_upload = self::truthy_shortcode_value( (string) $atts['upload'] );
 		$upload_id = 'kml_midi_upload_' . wp_generate_uuid4();
-		$demo_url = plugins_url( 'public/assets/demo-cloud-whisper.mid', KML_PLUGIN_FILE );
-		$demo_title = __( 'Cloud Whisper — Bennie Gunn (demo excerpt)', 'kuhmann-midi-library' );
+		$demo_url = plugins_url( 'public/assets/demo-the-man-that-got-away.mid', KML_PLUGIN_FILE );
+		$demo_title = __( 'The Man That Got Away', 'kuhmann-midi-library' );
 
 		ob_start();
 		?>

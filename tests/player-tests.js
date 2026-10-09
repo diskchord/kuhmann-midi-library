@@ -36,6 +36,23 @@
     };
     const stop = () => { q('.kml-stop').click(); h.frame(); };
     const file = name => new File([h.fixture(name)], name + '.mid', { type: 'audio/midi' });
+    const softPedalFile = (changes = [[1, 1], [3, 0]]) => {
+      const midi = new Midi();
+      midi.header.name = 'Soft pedal passage';
+      const first = midi.addTrack();
+      first.channel = 0;
+      first.addNote({ midi: 60, time: 0, duration: 6, velocity: 0.8 });
+      changes.forEach(([time, value]) => first.addCC({ number: 67, time, value }));
+      const second = midi.addTrack();
+      second.channel = 1;
+      second.addNote({ midi: 48, time: 0, duration: 6, velocity: 0.8 });
+      return new File([midi.toArray()], 'soft-pedal.mid');
+    };
+    const channelGate = record => {
+      const gate = h.gainPath(record)[0];
+      assert(gate && gate.gain, 'Each audible channel has a gain node');
+      return gate;
+    };
     async function test(name, run) {
       try { await run(); results.push('PASS ' + name); }
       catch (error) { failures++; results.push('FAIL ' + name + ': ' + error.message); console.error(error); }
@@ -188,7 +205,7 @@
       close(position(), 0, 'Stop returns to the beginning');
     });
 
-    await test('A–B loop clips lookahead notes and wraps at B', async () => {
+    await test('Piano loops retain note releases and schedule the next pass before B', async () => {
       seek(2);
       q('.kml-loop-a').click();
       seek(5);
@@ -202,7 +219,16 @@
       await play();
       const crossingNote = h.audio.find(record => record.when > wallStart + 0.02);
       assert(crossingNote, 'Lookahead schedules the note at 4.95 seconds');
-      assert(crossingNote.source.options.fadeOut === 0, 'Piano release cannot spill beyond B');
+      assert(crossingNote.source.options.fadeOut === 0.45, 'Looping preserves normal piano note releases');
+      const boundary = wallStart + 0.1;
+      const envelope = channelGate(crossingNote).destinations[0].gain;
+      close(envelope.valueAt(boundary - 0.004), 0.5, 'Pass output fades smoothly before B', 0.005);
+      close(envelope.valueAt(boundary), 0, 'Old pass is silent at B', 0.005);
+      const upcoming = h.audio.filter(record => Math.abs(record.when - boundary) < 0.00001);
+      assert(upcoming.length >= 2, 'Next pass notes are queued before the audio clock reaches B');
+      const nextEnvelope = channelGate(upcoming[0]).destinations[0].gain;
+      close(nextEnvelope.valueAt(boundary), 0, 'Next pass begins without an abrupt gain jump', 0.005);
+      close(nextEnvelope.valueAt(boundary + 0.004), 0.5, 'Next pass fades in on the audio clock', 0.005);
       const end = Number.isFinite(crossingNote.stoppedAt)
         ? crossingNote.stoppedAt : crossingNote.when + crossingNote.duration;
       assert(end <= wallStart + 0.101, 'Audio from before B ends at B');
@@ -210,6 +236,7 @@
       assert(position() >= 2 && position() < 2.3, 'Loop wraps to A and keeps playing');
       assert(q('.kml-play').dataset.state === 'pause', 'Loop remains playing');
       assert(h.intervalCount() === 1, 'Loop wrap retains exactly one scheduler');
+      assert(upcoming.every(record => !record.disposed), 'Wrapping retains the already queued next pass');
       stop();
       q('.kml-loop-clear').click();
       assert(!toggle.checked, 'Clear disables looping');
@@ -225,7 +252,7 @@
       stop();
     });
 
-    await test('Instrument loops use zero release and disconnect canceled voices', async () => {
+    await test('Instrument loops retain natural releases with a separate boundary fade', async () => {
       seek(2);
       q('.kml-loop-a').click();
       seek(5);
@@ -236,13 +263,83 @@
       await play();
       const crossingNote = h.audio.find(record => record.mode === 'soundfont' && record.note === 'E4');
       assert(crossingNote, 'Instrument note before B is scheduled');
-      assert(crossingNote.adsr && crossingNote.adsr[3] === 0, 'Instrument loop has an explicit zero release');
+      assert(crossingNote.adsr && crossingNote.adsr[3] === 0.1, 'Instrument notes keep their natural release');
+      const envelope = channelGate(crossingNote).destinations[0].gain;
+      close(envelope.valueAt(wallStart + 0.096), 0.5, 'Instrument output fades before B', 0.005);
+      close(envelope.valueAt(wallStart + 0.1), 0, 'Instrument pass is silent at B', 0.005);
+      assert(h.audio.some(record => Math.abs(record.when - wallStart - 0.1) < 0.00001),
+        'Next instrument pass is queued at B before the timer wraps');
       assert(crossingNote.when + crossingNote.duration <= wallStart + 0.101, 'Instrument note ends at B');
       const scheduled = h.audio.slice();
       seek(3);
       assert(scheduled.every(record => record.disconnected), 'Seek disconnects active and future instrument voices');
       stop();
       q('.kml-loop-clear').click();
+    });
+
+    await test('A and B draw labeled vertical markers when set, even with looping off', async () => {
+      const canvas = q('.kml-canvas');
+      const ctx = canvas.getContext('2d');
+      input(q('.kml-zoom'), 30);
+      const coloredPixels = (time, color) => {
+        const zoom = Number(q('.kml-zoom').value);
+        const left = Math.max(0, position() - canvas.width / (2 * zoom));
+        const x = Math.round((time - left) * zoom);
+        const data = ctx.getImageData(x, 30, 1, canvas.height - 30).data;
+        let count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (color.every((value, index) => data[i + index] === value)) count++;
+        }
+        return count;
+      };
+      seek(2);
+      q('.kml-loop-a').click();
+      h.frame();
+      assert(coloredPixels(2, [8, 127, 91]) > 50, 'A appears as a vertical line immediately');
+      seek(5);
+      q('.kml-loop-b').click();
+      h.frame();
+      assert(coloredPixels(5, [124, 58, 237]) > 50, 'B appears as a vertical line immediately');
+      q('.kml-loop-toggle').click();
+      h.frame();
+      assert(coloredPixels(2, [8, 127, 91]) > 50 && coloredPixels(5, [124, 58, 237]) > 50,
+        'Both marks stay visible with looping disabled');
+      input(q('.kml-zoom'), 50);
+      assert(coloredPixels(2, [8, 127, 91]) > 50 && coloredPixels(5, [124, 58, 237]) > 50,
+        'Markers track the musical positions after zooming');
+      q('.kml-loop-clear').click();
+      h.frame();
+      assert(coloredPixels(2, [8, 127, 91]) === 0 && coloredPixels(5, [124, 58, 237]) === 0,
+        'Clearing the loop removes both marker lines');
+      input(q('.kml-zoom'), 90);
+    });
+
+    await test('Short fast loops queue successive passes and keep position when disabled', async () => {
+      await mode('piano');
+      seek(2);
+      q('.kml-loop-a').click();
+      seek(2.2);
+      q('.kml-loop-b').click();
+      input(q('.kml-tempo'), 160);
+      h.audio.length = 0;
+      const start = h.now();
+      await play();
+      h.advance(0.39);
+      const starts = h.audio.map(record => record.when);
+      for (const offset of [0.125, 0.25, 0.375]) {
+        assert(starts.some(time => Math.abs(time - start - offset) < 0.00001),
+          'Repeated pass is scheduled exactly at its audio-clock boundary');
+      }
+      const at = position();
+      q('.kml-loop-toggle').click();
+      h.frame();
+      close(position(), at, 'Disabling a repeated loop keeps the displayed musical position', 0.01);
+      assert(h.intervalCount() === 1, 'Changing loop mode leaves one scheduler');
+      h.advance(0.1);
+      close(position(), at + 0.16, 'Playback continues normally from that position', 0.01);
+      stop();
+      q('.kml-loop-clear').click();
+      input(q('.kml-tempo'), 100);
     });
 
     await test('Sostenuto holds only notes already down on its channel', async () => {
@@ -265,6 +362,102 @@
       const sounded = h.audio.filter(record => record.mode === 'soundfont');
       assert(sounded.length === 1 && sounded[0].note === 'C4', 'Only captured channel-zero note remains held');
       close(sounded[0].duration, 1, 'Sostenuto releases at pedal up');
+      stop();
+    });
+
+    for (const sound of ['piano', 'soundfont']) {
+      await test(sound + ': soft pedal smoothly lowers held notes by 20% on its own channel', async () => {
+        await roll.kmlLoadFile(softPedalFile());
+        await mode(sound);
+        input(q('.kml-tempo'), 100);
+        h.audio.length = 0;
+        const start = h.now();
+        await play();
+        const voices = h.audio.filter(record => record.mode === sound);
+        assert(voices.length === 2, 'Both channels sound before the pedal');
+        const affected = channelGate(voices[0]);
+        const unchanged = channelGate(voices[1]);
+        assert(affected !== unchanged, 'Identical instruments on different channels have independent gain');
+        const gain = affected.gain;
+        close(gain.valueAt(start + 0.99), 1, 'Held note starts at full volume', 0.005);
+        close(gain.valueAt(start + 1), 1, 'Pedal down starts without a gain discontinuity', 0.005);
+        close(gain.valueAt(start + 1.06), 0.9, 'Pedal down ramps fluidly through its midpoint', 0.005);
+        close(gain.valueAt(start + 1.2), 0.8, 'Soft pedal settles at 80% volume', 0.005);
+        close(gain.valueAt(start + 3), 0.8, 'Pedal release starts from the current volume', 0.005);
+        close(gain.valueAt(start + 3.06), 0.9, 'Pedal release smoothly restores volume', 0.005);
+        close(gain.valueAt(start + 3.2), 1, 'Pedal release restores full volume', 0.005);
+        close(unchanged.gain.valueAt(start + 2), 1, 'Other channel remains at full volume', 0.005);
+        assert(gain.events.some(event => event.kind === 'linear' && event.value === 0.8),
+          'Attenuation uses WebAudio linear gain automation');
+        h.advance(3.3);
+        assert(h.audio.length === 2, 'Pedal changes affect existing voices without retriggering notes');
+        stop();
+      });
+
+      await test(sound + ': seek restores the exact soft-pedal ramp and cancels old automation', async () => {
+        h.audio.length = 0;
+        seek(0);
+        await play();
+        const oldGate = channelGate(h.audio[0]);
+        seek(1.06);
+        await settle();
+        const resumed = h.audio[h.audio.length - 2];
+        const newGate = channelGate(resumed);
+        assert(newGate !== oldGate, 'Seek replaces the previous gain route');
+        assert(oldGate.disposed || oldGate.destinations.length === 0, 'Seek disconnects the old gain route');
+        close(newGate.gain.valueAt(h.now()), 0.9, 'Seeking inside ramp restores its current value', 0.005);
+        close(newGate.gain.valueAt(h.now() + 0.06), 0.8, 'Seek completes only the remaining ramp', 0.005);
+        seek(2);
+        await settle();
+        const heldGate = channelGate(h.audio[h.audio.length - 2]);
+        close(heldGate.gain.valueAt(h.now()), 0.8, 'Seek into depressed pedal resumes softly', 0.005);
+        seek(0.5);
+        await settle();
+        const resetGate = channelGate(h.audio[h.audio.length - 2]);
+        close(resetGate.gain.valueAt(h.now()), 1, 'Seek before the pedal restores full volume', 0.005);
+        stop();
+      });
+
+      await test(sound + ': tempo scales pedal timing and A–B loop restores pedal state at A', async () => {
+        input(q('.kml-tempo'), 50);
+        seek(0);
+        h.audio.length = 0;
+        const start = h.now();
+        await play();
+        const gain = channelGate(h.audio[0]).gain;
+        close(gain.valueAt(start + 2), 1, 'Half tempo delays pedal down to two wall seconds', 0.005);
+        close(gain.valueAt(start + 2.12), 0.9, 'Half tempo scales the smoothing interval', 0.005);
+        close(gain.valueAt(start + 2.24), 0.8, 'Half tempo completes the fluid drop', 0.005);
+        stop();
+        input(q('.kml-tempo'), 100);
+        seek(0.5);
+        q('.kml-loop-a').click();
+        seek(2);
+        q('.kml-loop-b').click();
+        seek(1.9);
+        h.audio.length = 0;
+        await play();
+        const previousGate = channelGate(h.audio[0]);
+        close(previousGate.gain.valueAt(h.now()), 0.8, 'Loop begins with pedal down before B', 0.005);
+        h.advance(0.15);
+        const wrappedGate = channelGate(h.audio[h.audio.length - 2]);
+        assert(wrappedGate !== previousGate, 'Loop wrap creates a fresh gain route');
+        close(wrappedGate.gain.valueAt(h.now()), 1, 'Wrap restores released pedal at A', 0.005);
+        stop();
+        q('.kml-loop-clear').click();
+      });
+    }
+
+    await test('Rapid soft-pedal reversal starts from the in-flight volume', async () => {
+      await roll.kmlLoadFile(softPedalFile([[1, 1], [1.06, 0]]));
+      await mode('piano');
+      h.audio.length = 0;
+      const start = h.now();
+      await play();
+      const gain = channelGate(h.audio[0]).gain;
+      close(gain.valueAt(start + 1.06), 0.9, 'Early release keeps the partially reduced volume', 0.008);
+      close(gain.valueAt(start + 1.12), 0.95, 'Reversal ramps smoothly back up', 0.008);
+      close(gain.valueAt(start + 1.2), 1, 'Rapid release reaches full volume', 0.005);
       stop();
     });
 

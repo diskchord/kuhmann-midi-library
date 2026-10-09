@@ -46,6 +46,7 @@
   const intervals = new Map();
   const frames = new Map();
   const audio = [];
+  const nodes = [];
   const requests = [];
   const nativeTimeout = window.setTimeout.bind(window);
   Object.defineProperty(performance, 'now', { value: () => now * 1000 });
@@ -55,11 +56,58 @@
   window.cancelAnimationFrame = timer => frames.delete(timer);
   window.requestIdleCallback = () => ++id;
 
+  class Param {
+    constructor(value = 1) { this.value = value; this.events = []; }
+    valueAt(time) {
+      let value = this.value;
+      let lastTime = -Infinity;
+      for (const event of this.events) {
+        if (event.time > time) {
+          if (event.kind === 'linear' && Number.isFinite(lastTime)) {
+            return value + (event.value - value) * (time - lastTime) / (event.time - lastTime);
+          }
+          break;
+        }
+        value = event.value;
+        lastTime = event.time;
+      }
+      return value;
+    }
+    record(kind, value, time) {
+      this.events.push({ kind, value, time });
+      this.events.sort((a, b) => a.time - b.time);
+      return this;
+    }
+    setValueAtTime(value, time) { return this.record('set', value, time); }
+    linearRampToValueAtTime(value, time) { return this.record('linear', value, time); }
+    setTargetAtTime(value, time) { return this.record('target', value, time); }
+    rampTo(value, duration) {
+      this.setValueAtTime(this.valueAt(now), now);
+      return this.linearRampToValueAtTime(value, now + duration);
+    }
+    cancelScheduledValues(time) { this.events = this.events.filter(event => event.time < time); return this; }
+    cancelAndHoldAtTime(time) {
+      const value = this.valueAt(time);
+      this.cancelScheduledValues(time);
+      return this.setValueAtTime(value, time);
+    }
+    getValueAtTime(time) { return this.valueAt(time); }
+  }
   class Node {
-    constructor() { this.gain = { value: 1, rampTo() {}, cancelScheduledValues() {}, setTargetAtTime() {} }; }
-    connect() { return this; }
-    chain() { return this; }
-    dispose() { return this; }
+    constructor(value) {
+      this.gain = new Param(typeof value === 'number' ? value : 1);
+      this.destinations = [];
+      nodes.push(this);
+    }
+    connect(destination) { this.destinations.push(destination); return this; }
+    disconnect() { this.destinations = []; return this; }
+    chain(...destinations) {
+      let source = this;
+      destinations.forEach(destination => { source.connect(destination); source = destination; });
+      return this;
+    }
+    toDestination() { return this.connect(Tone.Destination); }
+    dispose() { this.disposed = true; return this; }
   }
   class Source extends Node {
     constructor(options) { super(); this.options = options; this.record = { mode: 'piano' }; }
@@ -94,11 +142,16 @@
     async resume() {}
   };
   window.Soundfont = {
-    instrument: async (context, name) => ({
+    instrument: async (context, name, instrumentOptions) => ({
       play(note, when, options) {
-        const record = { mode: 'soundfont', name, note, when, duration: options.duration, adsr: options.adsr };
+        const destination = instrumentOptions.destination;
+        const record = { mode: 'soundfont', name, note, when, duration: options.duration, adsr: options.adsr, destination };
         audio.push(record);
-        return { stop: t => { record.stoppedAt = t; }, disconnect: () => { record.disconnected = true; } };
+        return {
+          stop: t => { record.stoppedAt = t; },
+          disconnect: () => { record.disconnected = true; record.destination = null; },
+          connect: destination => { record.destination = destination; record.disconnected = false; },
+        };
       },
       stop(when) { for (const record of audio) if (record.name === name) record.stoppedAt = when; },
     }),
@@ -135,7 +188,13 @@
   navigator.sendBeacon = () => { throw new Error('Local files must not use sendBeacon'); };
 
   window.testPlayer = {
-    audio, requests, fixture,
+    audio, requests, fixture, nodes,
+    gainPath(record) {
+      const path = [];
+      let node = record.mode === 'piano' ? record.source.destinations[0] : record.destination;
+      while (node && !path.includes(node)) { path.push(node); node = node.destinations[0]; }
+      return path;
+    },
     wait: (milliseconds = 0) => new Promise(resolve => nativeTimeout(resolve, milliseconds)),
     frame() { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback(now * 1000)); },
     advance(seconds) {

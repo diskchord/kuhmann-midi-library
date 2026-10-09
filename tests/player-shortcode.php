@@ -41,8 +41,10 @@ check( ! contains( '<form', $html ) && ! contains( 'type="submit"', $html ), 'Ch
 check( ! contains( 'name="kml_midi_file"', $html ) && ! contains( 'multipart/form-data', $html ), 'Local file bytes must not become a successful form field, even inside an enclosing form.' );
 check( contains( 'Your MIDI file stays on your device.', $html ) && contains( 'drag one onto the player', $html ), 'The local picker should explain file handling and dropping.' );
 check( contains( 'data-midi-url=""', $html ), 'An empty player must wait for file selection or Demo, without auto-loading the old chromatic scale.' );
-check( contains( 'class="kml-btn kml-demo"', $html ) && contains( 'data-demo-url="' . KML_PLUGIN_URL . 'public/assets/demo-cloud-whisper.mid"', $html ), 'Try a demo must target the bundled archive excerpt.' );
-check( is_readable( KML_PLUGIN_DIR . 'public/assets/demo-cloud-whisper.mid' ), 'The configured demo asset must be present.' );
+check( contains( 'class="kml-btn kml-demo"', $html ) && contains( 'data-demo-url="' . KML_PLUGIN_URL . 'public/assets/demo-the-man-that-got-away.mid"', $html ), 'Try a demo must target the original archive performance.' );
+check( contains( 'data-demo-title="The Man That Got Away"', $html ), 'The demo must display the actual archive song title.' );
+check( is_readable( KML_PLUGIN_DIR . 'public/assets/demo-the-man-that-got-away.mid' ), 'The configured demo asset must be present.' );
+check( 'e693d173f1e509876f11bdb847cbecb291637ee9ce66b2abddaa7be30a727d6b' === hash_file( 'sha256', KML_PLUGIN_DIR . 'public/assets/demo-the-man-that-got-away.mid' ), 'The demo must preserve the complete original archive MIDI byte-for-byte.' );
 check( ! method_exists( 'KML_Public', 'save_player_upload' ) && ! method_exists( 'KML_Public', 'get_uploaded_player_file' ), 'Public player methods must no longer accept or retrieve server uploads.' );
 
 // An old cached form or bookmarked upload URL must not revive server processing.

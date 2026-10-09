@@ -4,16 +4,16 @@ The Apache License 2.0 in [`LICENSE`](LICENSE) applies to Kuhmann MIDI Library's
 
 ## Musical demo
 
-`public/assets/demo-cloud-whisper.mid` is a 38.4-second excerpt of **Cloud Whisper (Bennie Gunn)** from the user's Kuhmann / Disklavier World archive, `Bennie Gunn/04-Cloud Whisper (Bennie Gunn).mid`.
+`public/assets/demo-the-man-that-got-away.mid` is the complete original **The Man That Got Away** MIDI from the user's Kuhmann / Disklavier World archive, `Disklavier Jazz 3/266-The Man That Got Away.mid`.
 
-- [Original archive entry and full MIDI](https://www.alexanderpeppe.com/midi/04-cloud-whisper-bennie-gunn-ce57643e/)
-- Source SHA-256: `62931e0098da4bc1e76be42b89252d447ac3c9fcb520306d38387ac125a27875`
-- Excerpt: original ticks 1920–32640 at 480 ticks per quarter note, 100 BPM (the first sixteen musical bars, after the initial silent bar).
-- Parts: electric piano, jazz guitar, vibraphone, fretless bass, and drums. Notes, timing, velocity, instrument assignments, controllers, and pitch bends within the excerpt retain the original performance data. Initial setup is moved to the start; sounding notes and pedals are released at the excerpt's end.
+- Original and bundled SHA-256: `e693d173f1e509876f11bdb847cbecb291637ee9ce66b2abddaa7be30a727d6b` (13,738 bytes).
+- Duration: about 3 minutes 9 seconds (188.52 seconds through the final note; 189.56 seconds through the file's end).
+- Parts: acoustic grand piano and acoustic bass on separate MIDI channels, with 1,620 piano notes and 299 bass notes.
+- The bundled file is byte-for-byte identical to the source. All performance events, the original title, and attribution metadata are retained.
 
-The composition and MIDI performance are third-party musical material and are not covered by the plugin's Apache License. The archive supplies no separate license for this file. This excerpt is included as the user's requested archive demo, with its existing attribution retained.
+The composition and MIDI performance are third-party musical material and are not covered by the plugin's Apache License. The archive supplies no separate license for this file. This performance is included as the user's requested archive demo, with its existing attribution retained.
 
-To reproduce the excerpt from the original archive file, run `python3 scripts/build-demo.py /path/to/original.mid` (requires the Python `mido` package).
+To copy and verify the original archive file, run `python3 scripts/build-demo.py /path/to/original.mid`. The script uses Python's standard library and rejects any source whose hash does not match.
 
 ## Bundled MIDI parser
 
