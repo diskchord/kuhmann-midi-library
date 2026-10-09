@@ -1183,7 +1183,7 @@
     soundLabel.textContent = 'Sound ';
     const soundMode = document.createElement('select');
     soundMode.className = 'kml-sound-mode';
-    [['piano', 'Piano sound'], ['soundfont', "File’s instruments"]].forEach(([value, label]) => {
+    [['piano', 'Grand piano (high quality)'], ['soundfont', "File’s instruments"]].forEach(([value, label]) => {
       const option = document.createElement('option');
       option.value = value;
       option.textContent = label;
@@ -1380,7 +1380,7 @@
     function refreshRenderAvailability() {
       renderBtn.disabled = activeRender ? false : !canRenderAudio();
       if (audioMode === 'soundfont' && playbackNotes.length) {
-        setRenderStatus('Choose Piano sound to create a WAV of the full piece.');
+        setRenderStatus('Choose Grand piano to create a WAV of the full piece.');
       } else if (audioMode === 'piano') {
         setRenderStatus('');
       }
@@ -1876,7 +1876,7 @@
         setStatus('Loading instruments...', 'loading');
         soundfont = await ensureSoundfontPlayback(playbackNotes);
       } else {
-        setStatus('Loading piano...', 'loading');
+        setStatus('Loading grand piano...', 'loading');
         piano = await ensureTonePiano({ resumeCtx: true });
       }
 
@@ -2108,8 +2108,8 @@
         console.error('KML piano roll failed during play:', e);
         stop();
         setStatus(audioMode === 'soundfont'
-          ? 'Could not load the file’s instruments. Try Piano sound or press Play to retry.'
-          : 'Could not load the piano sound. Press Play to retry.', 'error');
+          ? 'Could not load the file’s instruments. Try Grand piano or press Play to retry.'
+          : 'Could not load the grand piano. Press Play to retry.', 'error');
         setPlayButtonMode('play');
         playBtn.disabled = false;
         stopBtn.disabled = false;
